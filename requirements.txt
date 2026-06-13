@@ -1,0 +1,28 @@
+# Core async / networking
+httpx>=0.27
+websockets>=12.0
+
+# Config & validation
+python-dotenv>=1.0
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# Logging & monitoring
+structlog>=24.1
+prometheus-client>=0.20  # Grafana monitoring stub (bot degrades gracefully without it)
+
+# Tests
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# ── Live trading only (not needed for paper mode, backtests, or tests) ─────────
+# py-clob-client-v2>=1.0.1  # Polymarket CLOB client; imported lazily by
+#                           # execution/polymarket_client.LiveClient. MUST be v2:
+#                           # the original py-clob-client rejects signature_type=3
+#                           # (POLY_1271) with "Invalid order inputs". Install
+#                           # before going live:  pip install py-clob-client-v2
+
+# Notes:
+# - The normal CDF uses math.erf (stdlib), so scipy/numpy are not dependencies.
+# - The backtester uses stdlib csv/lists, so pandas is not a dependency.
+# - Pin exact versions once the environment is locked.

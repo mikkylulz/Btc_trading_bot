@@ -1,0 +1,27 @@
+# ── Secrets — NEVER commit ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── Virtual environment ─────────────────────────────────────────────────
+.venv/
+venv/
+
+# ── Local data / runtime state (machine-specific, not for the repo) ─────
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+data/
+validation/
+*.log
+
+# ── Local agent / editor config ─────────────────────────────────────────
+.claude/
+.idea/
+.vscode/

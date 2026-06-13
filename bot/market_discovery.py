@@ -1,0 +1,158 @@
+"""Gamma API market discovery (Claude.md §5).
+
+- Exact slug-prefix validation only — NO fuzzy matching (fuzzy matching pulled
+  stale markets in panama).
+- Per market we record: window length, close timestamp, resolution feed
+  (Chainlink vs Binance), tie rule, and the CLOB token ids for Up/Down.
+- The opening reference ("Price to Beat") is pinned later from the resolution
+  feed's own buffer at window open (strategy.py) — never from spot.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import List, Optional
+
+import httpx
+
+from .config import WINDOW_SECONDS, Settings
+from .models import MarketInfo, ResolutionFeed
+from .utils import parse_iso_utc, utc_ts
+
+log = logging.getLogger(__name__)
+
+# Default resolution feed per window per Claude.md §1.1. The market description is
+# still checked and, if it names a feed explicitly, the description wins.
+DEFAULT_FEED_BY_WINDOW = {
+    "5m": ResolutionFeed.CHAINLINK,
+    "15m": ResolutionFeed.CHAINLINK,
+    "1h": ResolutionFeed.BINANCE,
+}
+
+
+def detect_window(slug: str, prefixes: dict) -> Optional[str]:
+    """Exact prefix match against configured slug prefixes. Longest prefix wins."""
+    best = None
+    for prefix, window in prefixes.items():
+        if slug.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, window)
+    return best[1] if best else None
+
+
+def detect_resolution_feed(description: str, window: str) -> ResolutionFeed:
+    d = (description or "").lower()
+    has_chainlink = "chainlink" in d
+    has_binance = "binance" in d
+    if has_chainlink and not has_binance:
+        return ResolutionFeed.CHAINLINK
+    if has_binance and not has_chainlink:
+        return ResolutionFeed.BINANCE
+    feed = DEFAULT_FEED_BY_WINDOW[window]
+    if has_chainlink and has_binance:
+        log.warning("description names both feeds; defaulting %s for window %s",
+                    feed.value, window)
+    return feed
+
+
+def parse_market(m: dict, prefixes: dict) -> Optional[MarketInfo]:
+    """Strictly parse one Gamma market dict; return None (and log why) if unusable."""
+    slug = m.get("slug") or ""
+    window = detect_window(slug, prefixes)
+    if window is None:
+        return None
+    end_raw = m.get("endDate") or m.get("endDateIso")
+    if not end_raw:
+        log.debug("skip %s: no endDate", slug)
+        return None
+    try:
+        close_ts = parse_iso_utc(end_raw).timestamp()
+    except ValueError:
+        log.warning("skip %s: bad endDate %r", slug, end_raw)
+        return None
+
+    raw_tokens = m.get("clobTokenIds")
+    if isinstance(raw_tokens, str):
+        try:
+            raw_tokens = json.loads(raw_tokens)
+        except json.JSONDecodeError:
+            raw_tokens = None
+    raw_outcomes = m.get("outcomes")
+    if isinstance(raw_outcomes, str):
+        try:
+            raw_outcomes = json.loads(raw_outcomes)
+        except json.JSONDecodeError:
+            raw_outcomes = None
+    if not raw_tokens or len(raw_tokens) != 2:
+        log.debug("skip %s: missing clobTokenIds", slug)
+        return None
+
+    # Map token ids to outcomes explicitly; never assume ordering if outcomes present.
+    token_up, token_down = raw_tokens[0], raw_tokens[1]
+    if raw_outcomes and len(raw_outcomes) == 2:
+        pairs = dict(zip([str(o).strip().lower() for o in raw_outcomes], raw_tokens))
+        if "up" in pairs and "down" in pairs:
+            token_up, token_down = pairs["up"], pairs["down"]
+        else:
+            log.warning("skip %s: outcomes %r are not Up/Down", slug, raw_outcomes)
+            return None
+
+    window_seconds = WINDOW_SECONDS[window]
+    return MarketInfo(
+        market_id=str(m.get("id") or m.get("conditionId") or slug),
+        slug=slug,
+        question=m.get("question") or slug,
+        window=window,
+        window_seconds=window_seconds,
+        open_ts=close_ts - window_seconds,
+        close_ts=close_ts,
+        resolution_feed=detect_resolution_feed(m.get("description", ""), window),
+        token_up=str(token_up),
+        token_down=str(token_down),
+        tie_rule_up=True,  # close >= open resolves Up (spec §1.1 / §13)
+    )
+
+
+class MarketDiscovery:
+    def __init__(self, settings: Settings):
+        self.s = settings
+
+    def candidate_slugs(self, now_ts: float) -> List[str]:
+        """Deterministic slugs for the in-progress window plus the next N, per
+        series. The recurring series use '<prefix><window_open_unix_ts>'
+        (verified live), so we construct exact slugs instead of crawling the
+        catalog — exact-slug validation by construction."""
+        slugs = []
+        for prefix, window in self.s.market_slug_prefixes.items():
+            secs = WINDOW_SECONDS[window]
+            open0 = (int(now_ts) // secs) * secs
+            for k in range(self.s.discovery_windows_ahead + 1):
+                slugs.append(f"{prefix}{open0 + k * secs}")
+        return slugs
+
+    async def fetch_active_markets(self) -> List[MarketInfo]:
+        """Fetch the BTC up/down markets for the current and upcoming windows."""
+        out: List[MarketInfo] = []
+        async with httpx.AsyncClient(base_url=self.s.gamma_host, timeout=10.0) as client:
+            for slug in self.candidate_slugs(utc_ts()):
+                try:
+                    resp = await client.get("/markets", params={"slug": slug})
+                    resp.raise_for_status()
+                    batch = resp.json()
+                except Exception as e:  # noqa: BLE001
+                    # repr: httpx timeout exceptions stringify to ""
+                    log.warning("gamma fetch failed for %s: %r", slug, e)
+                    continue
+                for m in batch if isinstance(batch, list) else []:
+                    if m.get("slug") != slug:   # exact match only
+                        continue
+                    info = parse_market(m, self.s.market_slug_prefixes)
+                    if info and all(x.market_id != info.market_id for x in out):
+                        out.append(info)
+        return out
+
+    def in_entry_window(self, market: MarketInfo, now_ts: float) -> bool:
+        """Entry gate: minutes remaining must be inside the configured per-window range."""
+        lo, hi = self.s.entry_windows.get(market.window, (0.0, 0.0))
+        mins_left = market.seconds_remaining(now_ts) / 60.0
+        return lo <= mins_left <= hi
