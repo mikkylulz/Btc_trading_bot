@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     halt_streak_n: int = 4
     halt_minutes: float = 60.0
     exit_prob_floor: float = 0.25       # exit if our side's modelled P falls below this
+    # Probability-space early-exit stop. DISABLED 2026-06-13: across 24 live-paper
+    # exits it was net -$21.88 vs holding. On a hard-capped binary the stop mostly
+    # locks in losses on positions that revert before close, and occasionally dumps
+    # a big winner (one +$26 settle exited at -$0.50). Max loss is the cost anyway.
+    # Re-enable only with a much lower floor or an information-gated rule (§7).
+    enable_prob_stop: bool = False
     paper_queue_penalty: float = 1.5    # multiply visible queue ahead by this in paper fills
     paper_non_fill_prob: float = 0.0    # extra random non-fill haircut (backtester uses its own)
 

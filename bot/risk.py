@@ -152,5 +152,12 @@ class RiskManager:
 
     # ── probability-space stop (Claude.md §7) ─────────────────────────────────
     def should_exit(self, our_side_p: float) -> bool:
-        """Exit if the modelled probability of our side has collapsed."""
+        """Exit if the modelled probability of our side has collapsed.
+
+        Disabled by default (enable_prob_stop=False): on a bounded-loss binary
+        the stop was net-negative — it cut reverting positions for a dollar or
+        two of 'savings' while occasionally forfeiting a big recovery. The
+        machinery in _manage_position still works when the flag is turned on."""
+        if not self.settings.enable_prob_stop:
+            return False
         return our_side_p < self.settings.exit_prob_floor

@@ -102,7 +102,16 @@ def test_halt_expires_and_old_losses_cannot_retrigger(settings):
     assert not ok
 
 
-def test_probability_space_stop(settings):
+def test_probability_space_stop_disabled_by_default(settings):
+    # Disabled 2026-06-13 (net-negative on a capped binary): never exits.
     rm = RiskManager(settings)
-    assert rm.should_exit(settings.exit_prob_floor - 0.01)
-    assert not rm.should_exit(settings.exit_prob_floor + 0.01)
+    assert not settings.enable_prob_stop
+    assert not rm.should_exit(0.01)
+    assert not rm.should_exit(settings.exit_prob_floor - 0.01)
+
+
+def test_probability_space_stop_when_enabled(settings):
+    s = settings.model_copy(update={"enable_prob_stop": True})
+    rm = RiskManager(s)
+    assert rm.should_exit(s.exit_prob_floor - 0.01)
+    assert not rm.should_exit(s.exit_prob_floor + 0.01)

@@ -22,7 +22,10 @@ T0 = 1_750_000_000.0
 
 @pytest.fixture
 def app(settings):
-    s = settings.model_copy(update={"prometheus_enabled": False})
+    # enable_prob_stop=True so the exit-order machinery tests still exercise the
+    # path (the stop is disabled by default in prod, but the machinery remains).
+    s = settings.model_copy(update={"prometheus_enabled": False,
+                                    "enable_prob_stop": True})
     return TradingApp(s)
 
 
