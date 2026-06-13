@@ -271,6 +271,22 @@ class BotStore:
                 "win_rate": (row["wins"] / n) if n else 0.0,
                 "avg_win": row["avg_win"], "avg_loss": row["avg_loss"]}
 
+    def side_breakdown(self) -> List[dict]:
+        """UP vs DOWN profitability over resolved, untagged trades. Same KPI
+        caveat as pnl_summary: net-of-fee EV/trade is what matters, not win rate
+        (and a few cheap tail wins can flatter one side's total)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT outcome_side AS side, COUNT(*) AS n,"
+                " COALESCE(SUM(net_pnl), 0) AS net, COALESCE(AVG(net_pnl), 0) AS ev,"
+                " COALESCE(SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,"
+                " COALESCE(AVG(executable_price), 0) AS avg_entry"
+                " FROM trades WHERE resolved = 1 AND (tag IS NULL OR tag = '')"
+                " GROUP BY outcome_side ORDER BY outcome_side").fetchall()
+        return [{"side": r["side"], "n": r["n"], "net": r["net"], "ev": r["ev"],
+                 "wins": r["wins"], "win_rate": (r["wins"] / r["n"]) if r["n"] else 0.0,
+                 "avg_entry": r["avg_entry"]} for r in rows]
+
     def open_trades(self) -> List[dict]:
         with self._lock:
             rows = self._conn.execute(

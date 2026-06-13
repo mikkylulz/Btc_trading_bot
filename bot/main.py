@@ -509,6 +509,15 @@ def cmd_status(settings: Settings) -> None:
           f"({s['win_rate']*100:.1f}% win rate, {s['exits']} early exits)")
     print(f"avg win / loss:    {s['avg_win']:+.2f} / {s['avg_loss']:+.2f} USD")
     print("  (note: WR is not the objective — breakeven WR = entry price + fees)")
+    sides = store.side_breakdown()
+    if sides:
+        print("\nUP vs DOWN (resolved):")
+        print(f"  {'side':<5}{'trades':>7}{'net USD':>10}{'EV/trade':>10}"
+              f"{'win rate':>10}{'avg entry':>11}")
+        for b in sides:
+            print(f"  {b['side']:<5}{b['n']:>7}{b['net']:>+10.2f}{b['ev']:>+10.2f}"
+                  f"{b['win_rate']*100:>9.0f}%{b['avg_entry']:>11.3f}")
+        print("  (totals can be skewed by a few cheap tail wins — compare EV/trade)")
     print("\ncalibration (modelled P vs realised):")
     rows = store.calibration_report()
     if not rows:
