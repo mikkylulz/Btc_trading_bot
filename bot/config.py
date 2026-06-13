@@ -112,7 +112,8 @@ class Settings(BaseSettings):
     # Re-enable only with a much lower floor or an information-gated rule (§7).
     enable_prob_stop: bool = False
     paper_queue_penalty: float = 1.5    # multiply visible queue ahead by this in paper fills
-    paper_non_fill_prob: float = 0.0    # extra random non-fill haircut (backtester uses its own)
+    # Set to 0.25 for realistic maker fill modeling — 0.0 is optimistic, 0.3 matches backtester
+    paper_non_fill_prob: float = 0.25
 
     # ─── Persistence / monitoring ────────────────────────────────────────────
     db_path: str = "bot_data.sqlite"
