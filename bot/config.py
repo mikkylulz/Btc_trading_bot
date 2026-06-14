@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     model_error_buffer: float = 0.05    # EV margin for sigma mis-estimation (0.04–0.06)
     drift_cap: float = 0.05             # max |ΔΦ(z)| the signal layer may cause
     tick_size: float = 0.01
-    min_order_contracts: float = 5.0
+    min_order_contracts: float = 2.0
     # minutes-remaining entry gate per window: (min, max)
     entry_windows: Dict[str, Tuple[float, float]] = {
         "5m": (1.0, 3.5),
@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # ─── Risk (Claude.md §7) ─────────────────────────────────────────────────
     bankroll_usd: float = 100.0
     kelly_fraction: float = 0.25
-    max_trade_usd: float = 5.0          # hard cap dominates Kelly
+    max_trade_usd: float = 2.0          # hard cap dominates Kelly (was 5.0, lowered 2026-06-14)
     max_concurrent_positions: int = 3
     max_new_positions_per_window_per_day: int = 20
     max_capital_at_risk_usd: float = 50.0
