@@ -115,6 +115,13 @@ class RiskManager:
         self.open_positions += 1
         self.capital_at_risk_usd += usd
 
+    def restore_position(self, usd: float) -> None:
+        """Re-register an exposure on startup reload (a position that was open
+        when the bot last stopped). Counts toward concurrency/capital caps but
+        is NOT a fresh daily entry."""
+        self.open_positions += 1
+        self.capital_at_risk_usd += usd
+
     def record_addon(self, usd: float) -> None:
         """An add-on fill grew an existing position: more capital at risk, but
         not a new position or a new daily entry."""

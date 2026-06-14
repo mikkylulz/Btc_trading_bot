@@ -171,6 +171,19 @@ class BotStore:
                     (resolution_outcome, net, r["id"]))
             self._conn.commit()
 
+    def void_open_trades(self, market_id: str, reason: str) -> int:
+        """Mark a market's open trades resolved-but-VOID (PnL 0, tagged so they
+        leave the open count and are excluded from stats). Used when a position
+        can never be graded locally — e.g. stranded across a restart, or the
+        resolution feed never caught up past close."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE trades SET resolved = 1, resolution_outcome = 'VOID',"
+                " net_pnl = 0, tag = ? WHERE market_id = ? AND resolved = 0",
+                (f"void_{reason}", market_id))
+            self._conn.commit()
+            return cur.rowcount
+
     def add_fill_to_trade(self, market_id: str, size: float, price: float,
                           fee: float = 0.0) -> None:
         """An add-on fill grew the open trade: update contracts and the

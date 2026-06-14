@@ -93,6 +93,51 @@ class TradingApp:
         self._settle_warn_at: Dict[str, float] = {}  # market_id -> next warn ts (throttle)
         self._next_pnl_poll: float = 0.0          # throttle the pnl_summary aggregate
         self._stop = asyncio.Event()
+        self._reload_open_positions()
+
+    # ── startup recovery ───────────────────────────────────────────────────────
+    def _reload_open_positions(self) -> None:
+        """Rebuild in-memory positions from the DB so a restart doesn't strand
+        open trades as permanent zombies. Each is re-tracked; the eval loop then
+        settles it at close (or voids it via the give-up path if it can never be
+        graded). Markets still active get re-discovered with full token info."""
+        from .config import WINDOW_SECONDS
+        from .models import ResolutionFeed
+        try:
+            open_rows = self.store.open_trades()
+        except Exception:  # noqa: BLE001
+            log.exception("could not reload open positions")
+            return
+        recovered = 0
+        for r in open_rows:
+            mid, slug, window = r["market_id"], r["slug"], r["window"]
+            tail = slug.rsplit("-", 1)[-1] if slug else ""
+            wsec = WINDOW_SECONDS.get(window)
+            if not tail.isdigit() or wsec is None:
+                continue
+            open_ts = int(tail)
+            try:
+                feed = ResolutionFeed(r["resolution_feed"])
+            except (ValueError, KeyError):
+                feed = ResolutionFeed.CHAINLINK
+            market = MarketInfo(
+                market_id=mid, slug=slug, question=slug, window=window,
+                window_seconds=wsec, open_ts=open_ts, close_ts=open_ts + wsec,
+                resolution_feed=feed, token_up="", token_down="",
+                opening_reference=r["opening_reference"])
+            pos = Position(
+                market_id=mid, outcome=Outcome(r["outcome_side"]),
+                contracts=r["contracts"], avg_price=r["executable_price"],
+                fees_paid=r["fee_paid"] or 0.0, window=window,
+                resolution_feed=r["resolution_feed"],
+                opening_reference=r["opening_reference"] or 0.0,
+                entry_feed_price=r["entry_feed_price"] or 0.0)
+            self.markets[mid] = market
+            self.positions[mid] = pos
+            self.risk.restore_position(pos.contracts * pos.avg_price)
+            recovered += 1
+        if recovered:
+            log.info("reloaded %d open position(s) from DB on startup", recovered)
 
     # ── resolution feed plumbing ──────────────────────────────────────────────
     def _res_feed(self, market: MarketInfo):
@@ -374,12 +419,13 @@ class TradingApp:
             opening = res_feed.buffer.price_at_or_before(market.open_ts)
         if opening is None:
             if self.positions.get(market.market_id):
-                log.error("%s has a position but no opening reference — "
-                          "resolve manually", market.slug)
+                # Can never grade this position locally — void it rather than
+                # leave it open forever (the zombie-trade bug).
+                self._void_position(market, "no_opening_ref", now)
             else:
                 log.info("dropping %s: no opening reference (window opened "
                          "before feed history)", market.slug)
-            self._drop_market(market.market_id)
+                self._drop_market(market.market_id)
             return
 
         # Staleness guard: only grade once the feed has a tick AT/AFTER the
@@ -394,9 +440,11 @@ class TradingApp:
                 log.warning("cannot settle %s yet (resolution feed not past "
                             "close) — waiting", market.slug)
             if now - market.close_ts > 300:
-                log.error("giving up local settlement for %s; resolve manually",
-                          market.slug)
-                self._drop_market(market.market_id)
+                if self.positions.get(market.market_id):
+                    self._void_position(market, "feed_never_caught_up", now)
+                else:
+                    log.error("giving up local settlement for %s", market.slug)
+                    self._drop_market(market.market_id)
             return
         up_won = close_px >= opening if market.tie_rule_up else close_px > opening
         outcome = "UP" if up_won else "DOWN"
@@ -422,6 +470,20 @@ class TradingApp:
         else:
             self.store.resolve_trades(market.market_id, outcome)
         self.store.resolve_calibration(market.market_id, up_won)
+        self._drop_market(market.market_id)
+
+    def _void_position(self, market: MarketInfo, reason: str, now: float) -> None:
+        """Close out a position that can never be graded locally: void the trade
+        row (PnL 0, excluded from stats), release its capital, drop the market.
+        Prevents the stuck-open-forever zombie state."""
+        pos = self.positions.pop(market.market_id, None)
+        n = self.store.void_open_trades(market.market_id, reason)
+        if pos:
+            self.risk.record_exit(pos.contracts * pos.avg_price)
+        log.warning("VOID %s (%s) — %d trade(s) marked void, not graded",
+                    market.slug, reason, n)
+        self.notifier.send(f"VOID {market.slug}\n  reason: {reason} "
+                           f"(could not grade locally; excluded from P&L)")
         self._drop_market(market.market_id)
 
     def _drop_market(self, market_id: str) -> None:

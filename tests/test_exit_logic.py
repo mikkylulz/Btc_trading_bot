@@ -269,6 +269,45 @@ def test_polymarket_ws_handle_raw_tolerates_keepalives(app):
     assert top is not None and top.best_bid == pytest.approx(0.30)
 
 
+# ── zombie-trade fix: reload + void ─────────────────────────────────────────────
+
+def test_reload_open_positions_from_db(settings):
+    """A position open when the bot stopped must be rebuilt on restart, not
+    stranded as a permanent open zombie."""
+    from bot.logging_db import BotStore
+    s = settings.model_copy(update={"prometheus_enabled": False})
+    market = make_market(close_ts=T0 + 600)
+    store = BotStore(s.db_path)
+    fill = Fill(order_id="o", market_id=market.market_id, token_id=market.token_up,
+                outcome=Outcome.UP, side=Side.BUY, price=0.50, size=10.0, fee=0.0, ts=T0)
+    store.record_entry(market, make_fv(0.80), fill, fee_avoided=0.0)
+    store.close()
+
+    app = TradingApp(s)   # __init__ runs _reload_open_positions
+    assert market.market_id in app.positions
+    assert app.positions[market.market_id].contracts == 10.0
+    assert app.positions[market.market_id].outcome == Outcome.UP
+    assert market.market_id in app.markets
+    assert app.risk.open_positions == 1
+    assert app.risk.capital_at_risk_usd == pytest.approx(5.0)
+
+
+def test_settle_voids_stranded_position(app):
+    """If a position can never be graded (feed never caught up past close), it
+    is voided after the give-up window — not left open forever."""
+    market = make_market(close_ts=T0 + 60)
+    buy_into_position(app, market, size=10.0, price=0.50)
+    app.chainlink._update(100_050.0, T0 + 30)        # tick BEFORE close, never after
+    app._settle(market, T0 + 60 + 301)               # past the 300s give-up window
+    assert market.market_id not in app.positions
+    assert market.market_id not in app.markets
+    row = open_trade_row(app, market.market_id)
+    assert row["resolved"] == 1
+    assert row["resolution_outcome"] == "VOID"
+    assert row["net_pnl"] == 0
+    assert app.store.pnl_summary()["net_pnl"] == 0   # excluded from stats
+
+
 # ── risk: pending exposure ────────────────────────────────────────────────────
 
 def test_pending_orders_consume_exposure_caps(settings):
