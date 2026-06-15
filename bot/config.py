@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Window lengths in seconds, keyed by the window label used everywhere in the bot.
@@ -17,8 +18,10 @@ WINDOW_SECONDS: Dict[str, int] = {"5m": 300, "15m": 900, "1h": 3600}
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # ─── Mode ────────────────────────────────────────────────────────────────
-    mode: str = "paper"                 # paper | live
+    # ─── Mode (TRIPLE-LOCK to go live — all three required) ──────────────────
+    # 1) LIVE_MODE=true  2) live_confirm=YES  3) a valid paper_validation.json.
+    # LIVE_MODE=true ALONE does nothing — it only arms lock #1. Default paper.
+    live_mode: bool = Field(default=False)   # env: LIVE_MODE
     allow_taker: bool = False           # crypto stays false; maker-first (Claude.md §1.2)
     live_confirm: str = ""              # must be "YES" (plus validation record) to go live
 
@@ -73,7 +76,7 @@ class Settings(BaseSettings):
     model_error_buffer: float = 0.05    # EV margin for sigma mis-estimation (0.04–0.06)
     drift_cap: float = 0.05             # max |ΔΦ(z)| the signal layer may cause
     tick_size: float = 0.01
-    min_order_contracts: float = 2.0
+    min_order_contracts: float = 0.1   # 5 -> 2 -> 0.1 (matches $1 max; allows Kelly-sized-down orders)
     # minutes-remaining entry gate per window: (min, max)
     entry_windows: Dict[str, Tuple[float, float]] = {
         "5m": (1.0, 3.5),
@@ -98,7 +101,7 @@ class Settings(BaseSettings):
     # ─── Risk (Claude.md §7) ─────────────────────────────────────────────────
     bankroll_usd: float = 100.0
     kelly_fraction: float = 0.25
-    max_trade_usd: float = 2.0          # hard cap dominates Kelly (was 5.0, lowered 2026-06-14)
+    max_trade_usd: float = 1.0          # hard cap dominates Kelly (5.0 -> 2.0 -> 1.0)
     max_concurrent_positions: int = 3
     max_new_positions_per_window_per_day: int = 20
     max_capital_at_risk_usd: float = 50.0
@@ -125,7 +128,9 @@ class Settings(BaseSettings):
 
     @property
     def is_paper(self) -> bool:
-        return self.mode.lower() != "live"
+        # Lock #1 of the triple-lock. live_confirm + validation record are
+        # enforced separately in RiskManager.is_live_allowed().
+        return not self.live_mode
 
 
 def load_settings() -> Settings:

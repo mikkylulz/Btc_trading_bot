@@ -12,27 +12,34 @@ T0 = 1_750_000_000.0
 
 def test_paper_mode_default_true(settings):
     assert settings.is_paper
+    assert not settings.live_mode            # LIVE_MODE defaults False
     assert not RiskManager(settings).is_live_allowed()
 
 
+def test_live_mode_alone_does_nothing(settings):
+    # Lock #1 only — no confirm, no record — must still be blocked.
+    s = settings.model_copy(update={"live_mode": True})
+    assert not RiskManager(s).is_live_allowed()
+
+
 def test_live_requires_confirm_flag(settings):
-    s = settings.model_copy(update={"mode": "live"})
+    s = settings.model_copy(update={"live_mode": True})
     assert not RiskManager(s).is_live_allowed()
 
 
 def test_live_requires_validation_record(settings, tmp_path):
-    s = settings.model_copy(update={"mode": "live", "live_confirm": "YES"})
+    s = settings.model_copy(update={"live_mode": True, "live_confirm": "YES"})
     rm = RiskManager(s)
     assert not rm.is_live_allowed()          # no record on disk
 
     record = {"net_ev_per_trade": 0.012, "calibration_ok": True, "sample_size": 400}
     with open(s.validation_record_path, "w") as f:
         json.dump(record, f)
-    assert RiskManager(s).is_live_allowed()
+    assert RiskManager(s).is_live_allowed()  # all three locks now satisfied
 
 
 def test_live_rejects_negative_ev_record(settings):
-    s = settings.model_copy(update={"mode": "live", "live_confirm": "YES"})
+    s = settings.model_copy(update={"live_mode": True, "live_confirm": "YES"})
     with open(s.validation_record_path, "w") as f:
         json.dump({"net_ev_per_trade": -0.01, "calibration_ok": True,
                    "sample_size": 400}, f)

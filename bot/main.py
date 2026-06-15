@@ -512,6 +512,9 @@ class TradingApp:
     # ── lifecycle ─────────────────────────────────────────────────────────────
     async def run(self) -> None:
         mode = "LIVE" if self.live else "PAPER"
+        # LIVE_MODE is lock #1; effective mode is live only if all three locks pass.
+        log.info("LIVE_MODE: %s | effective mode: %s",
+                 self.s.live_mode, "live" if self.live else "paper")
         log.info("starting in %s mode", mode)
         self.notifier.send(
             f"Started in {mode} mode. Trading BTC up/down "
