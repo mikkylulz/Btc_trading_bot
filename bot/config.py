@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     model_error_buffer: float = 0.05    # EV margin for sigma mis-estimation (0.04–0.06)
     drift_cap: float = 0.05             # max |ΔΦ(z)| the signal layer may cause
     tick_size: float = 0.01
-    min_order_contracts: float = 0.1   # 5 -> 2 -> 0.1 (matches $1 max; allows Kelly-sized-down orders)
+    min_order_contracts: float = 1.0   # tracks max_trade_usd: 5 -> 2 -> 1 (keeps max entry price $1.00)
     # minutes-remaining entry gate per window: (min, max)
     entry_windows: Dict[str, Tuple[float, float]] = {
         "5m": (1.0, 3.5),
