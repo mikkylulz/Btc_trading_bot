@@ -127,3 +127,25 @@ def test_planner_rejects_missing_book(settings):
     d = planner.plan_entry(_market(), _fv(0.80), None, None)
     assert d.action == "reject"
     assert d.reason == "no_book"
+
+
+def test_entry_band_skips_below_floor(settings):
+    # band 0.31-0.52: a cheap ~0.10 entry must be rejected as outside the band
+    s = settings.model_copy(update={"min_entry_price": 0.31, "max_entry_price": 0.52})
+    planner = OrderPlanner(s)
+    up = BookTop(token_id="TU", best_bid=0.09, best_ask=0.12, bid_size=50, ask_size=50)
+    down = BookTop(token_id="TD", best_bid=0.85, best_ask=0.90, bid_size=50, ask_size=50)
+    d = planner.plan_entry(_market(), _fv(0.80), up, down)
+    assert d.action == "reject"
+    assert d.reason == "outside_price_band"
+
+
+def test_entry_band_allows_inside(settings):
+    # same band: a ~0.40 entry with edge clears and posts
+    s = settings.model_copy(update={"min_entry_price": 0.31, "max_entry_price": 0.52})
+    planner = OrderPlanner(s)
+    up = BookTop(token_id="TU", best_bid=0.40, best_ask=0.45, bid_size=50, ask_size=50)
+    down = BookTop(token_id="TD", best_bid=0.55, best_ask=0.60, bid_size=50, ask_size=50)
+    d = planner.plan_entry(_market(), _fv(0.80), up, down)
+    assert d.action == "post"
+    assert 0.31 <= d.target_price <= 0.52

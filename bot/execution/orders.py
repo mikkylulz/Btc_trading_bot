@@ -93,6 +93,13 @@ class OrderPlanner:
         if target <= 0:
             return Decision(action="reject", reason="target_price_nonpositive",
                             edge=edge, edge_margin=margin, **base)
+        # Entry-price band: only trade where the buy price falls in
+        # [min_entry_price, max_entry_price]. Lets us restrict to a calibrated
+        # band (e.g. 0.31-0.52) and skip cheaper/pricier entries regardless of edge.
+        if target < self.s.min_entry_price or target > self.s.max_entry_price:
+            return Decision(action="reject", reason="outside_price_band",
+                            book_price=post_price, target_price=target,
+                            edge=edge, edge_margin=margin, **base)
         return Decision(action="post", reason="edge_above_margin",
                         book_price=post_price, target_price=target,
                         edge=edge, edge_margin=margin, **base)

@@ -37,6 +37,13 @@ class ExecutionClient(ABC):
     @abstractmethod
     def open_orders(self) -> List[Order]: ...
 
+    @abstractmethod
+    def order_matched(self, order_id: str) -> Optional[float]:
+        """Authoritative filled-contract count for one order (CLOB size_matched),
+        or None if it can't be determined (paper mode, or a transient API error).
+        The live fill reconciler diffs this against what it has already counted."""
+        ...
+
 
 def _assert_not_crossing(side: Side, price: float, top: Optional[BookTop],
                          allow_taker: bool) -> None:
@@ -73,6 +80,9 @@ class PaperClient(ExecutionClient):
 
     def open_orders(self) -> List[Order]:
         return self.engine.open_orders()
+
+    def order_matched(self, order_id: str) -> Optional[float]:
+        return None  # paper fills arrive via the engine's on_fill callback
 
 
 class LiveClient(ExecutionClient):
@@ -169,3 +179,20 @@ class LiveClient(ExecutionClient):
         except Exception as e:  # noqa: BLE001
             log.warning("get_open_orders failed: %s", e)
         return out
+
+    def order_matched(self, order_id: str) -> Optional[float]:
+        # get_order is authoritative whether the order is open, filled or
+        # cancelled — so the reconciler never has to *infer* a fill from an
+        # order disappearing (which would risk phantom positions).
+        try:
+            o = self.client.get_order(order_id) or {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("get_order %s failed: %s", order_id, e)
+            return None
+        matched = o.get("size_matched", o.get("sizeMatched"))
+        if matched is None:
+            return None
+        try:
+            return float(matched)
+        except (TypeError, ValueError):
+            return None
