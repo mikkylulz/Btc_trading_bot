@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS trades (
     resolved INTEGER DEFAULT 0,
     resolution_outcome TEXT,   -- UP | DOWN | EXIT
     net_pnl REAL,
-    tag TEXT DEFAULT ''        -- non-empty = excluded from PnL (e.g. mis-graded pre-fix rows)
+    tag TEXT DEFAULT '',       -- non-empty = excluded from PnL (e.g. mis-graded pre-fix rows)
+    is_live INTEGER DEFAULT 0  -- 1 = real CLOB fill (live mode); 0 = paper
 );
 CREATE TABLE IF NOT EXISTS calibration (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +108,10 @@ class BotStore:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(trades)")}
         if "tag" not in cols:
             self._conn.execute("ALTER TABLE trades ADD COLUMN tag TEXT DEFAULT ''")
+        if "is_live" not in cols:
+            # existing rows predate live mode -> paper (0), which is correct
+            self._conn.execute(
+                "ALTER TABLE trades ADD COLUMN is_live INTEGER DEFAULT 0")
         cal_cols = {r["name"] for r in
                     self._conn.execute("PRAGMA table_info(calibration)")}
         if "tag" not in cal_cols:
@@ -131,20 +136,35 @@ class BotStore:
 
     # ── trades ────────────────────────────────────────────────────────────────
     def record_entry(self, market: MarketInfo, fv: FairValue, fill: Fill,
-                     fee_avoided: float) -> int:
+                     fee_avoided: float, is_live: bool = False) -> int:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO trades (market_id, slug, window, resolution_feed,"
                 " outcome_side, opening_reference, entry_feed_price, fair_p_at_entry,"
                 " z_at_entry, executable_price, contracts, fee_paid, fee_avoided,"
-                " fill_type, entry_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " fill_type, entry_ts, is_live) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (market.market_id, market.slug, market.window,
                  market.resolution_feed.value, fill.outcome.value,
                  fv.opening_reference, fv.feed_price, fv.p_for(fill.outcome), fv.z,
                  fill.price, fill.size, fill.fee, fee_avoided,
-                 "maker" if fill.is_maker else "taker", fill.ts))
+                 "maker" if fill.is_maker else "taker", fill.ts, 1 if is_live else 0))
             self._conn.commit()
             return int(cur.lastrowid)
+
+    def live_guard_stats(self, first_n: int) -> dict:
+        """Stats over the FIRST `first_n` resolved LIVE trades (oldest first),
+        for the live-validation circuit breaker. Only real CLOB fills count;
+        paper history and tagged/void rows are excluded."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT net_pnl FROM trades WHERE resolved = 1 AND is_live = 1"
+                " AND (tag IS NULL OR tag = '') ORDER BY entry_ts ASC LIMIT ?",
+                (first_n,)).fetchall()
+        n = len(rows)
+        net = sum(r["net_pnl"] for r in rows)
+        wins = sum(1 for r in rows if r["net_pnl"] > 0)
+        return {"n": n, "net_pnl": net, "wins": wins,
+                "win_rate": (wins / n) if n else 0.0}
 
     def resolve_trades(self, market_id: str, resolution_outcome: str,
                        net_override: Optional[float] = None) -> None:

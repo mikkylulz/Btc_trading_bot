@@ -113,9 +113,64 @@ def parse_market(m: dict, prefixes: dict) -> Optional[MarketInfo]:
     )
 
 
+def parse_resolution(m: dict) -> Optional[str]:
+    """Polymarket's actual resolved outcome ('UP'/'DOWN') from a Gamma market
+    dict, or None if not yet decisively resolved. The winning outcome token
+    settles to 1.0 — we require a clear 1/0 split AND closed=true so we never
+    mistake a pre-resolution mid price (e.g. 0.62) for a resolution."""
+    if not m.get("closed"):
+        return None
+    prices = m.get("outcomePrices")
+    outcomes = m.get("outcomes")
+    if isinstance(prices, str):
+        try:
+            prices = json.loads(prices)
+        except json.JSONDecodeError:
+            prices = None
+    if isinstance(outcomes, str):
+        try:
+            outcomes = json.loads(outcomes)
+        except json.JSONDecodeError:
+            outcomes = None
+    if not prices or not outcomes or len(prices) != len(outcomes):
+        return None
+    try:
+        labelled = {str(o).strip().lower(): float(p)
+                    for o, p in zip(outcomes, prices)}
+    except (TypeError, ValueError):
+        return None
+    if "up" not in labelled or "down" not in labelled:
+        return None
+    up_p, down_p = labelled["up"], labelled["down"]
+    if up_p >= 0.99 and down_p <= 0.01:
+        return "UP"
+    if down_p >= 0.99 and up_p <= 0.01:
+        return "DOWN"
+    return None  # closed but not a decisive 1/0 split yet
+
+
 class MarketDiscovery:
     def __init__(self, settings: Settings):
         self.s = settings
+
+    async def fetch_resolution(self, slug: str) -> Optional[str]:
+        """Settlement fallback: Polymarket's real resolved outcome for one market
+        ('UP'/'DOWN'), or None if not yet resolved / unreachable. Grades off the
+        same oracle the market settles on, so it's authoritative when our local
+        feed missed the close (reconnect gap)."""
+        async with httpx.AsyncClient(base_url=self.s.gamma_host, timeout=10.0) as client:
+            try:
+                resp = await client.get("/markets", params={"slug": slug})
+                resp.raise_for_status()
+                batch = resp.json()
+            except Exception as e:  # noqa: BLE001
+                log.warning("oracle resolution fetch failed for %s: %r", slug, e)
+                return None
+        for m in batch if isinstance(batch, list) else []:
+            if m.get("slug") != slug:   # exact match only
+                continue
+            return parse_resolution(m)
+        return None
 
     def candidate_slugs(self, now_ts: float) -> List[str]:
         """Deterministic slugs for the in-progress window plus the next N, per

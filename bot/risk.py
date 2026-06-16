@@ -12,6 +12,7 @@ paper/live gating (Claude.md §7).
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -76,8 +77,21 @@ class RiskManager:
         committed = self.capital_at_risk_usd + pending_usd
         if committed + usd > s.max_capital_at_risk_usd:
             usd = max(0.0, s.max_capital_at_risk_usd - committed)
-        contracts = usd / cost if cost > 0 else 0.0
-        return contracts if contracts >= s.min_order_contracts else 0.0
+        if cost <= 0 or usd <= 0:
+            return 0.0
+
+        # Polymarket maker order floors: >= min_order_contracts shares AND
+        # >= $1 notional. With the flat $1 cap that means price must be <= ~$0.20
+        # (5 shares cost 5*price); pricier entries can't satisfy 5 shares within
+        # the cap, so we skip them rather than spam the CLOB with rejects.
+        contracts = math.floor(usd / cost * 100) / 100  # 2dp, matches CLOB client
+        if contracts < s.min_order_contracts:
+            return 0.0
+        # Guarantee the 2dp-rounded notional clears $1 (the $0.9996 reject):
+        # bump shares up to the next cent if size*price lands just under the floor.
+        if contracts * cost < s.min_notional_usd:
+            contracts = math.ceil(s.min_notional_usd / cost * 100) / 100
+        return contracts
 
     # ── exposure gates ────────────────────────────────────────────────────────
     def can_enter(self, window: str, now_ts: Optional[float] = None,

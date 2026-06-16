@@ -91,7 +91,10 @@ class TradingApp:
         self.exited_markets: set = set()          # no re-entry after an exit (one trade/window)
         self._last_reject: Dict[str, str] = {}    # market_id -> last reject reason (dedup)
         self._settle_warn_at: Dict[str, float] = {}  # market_id -> next warn ts (throttle)
+        self._oracle_poll_at: Dict[str, float] = {}  # market_id -> next oracle poll ts
         self._next_pnl_poll: float = 0.0          # throttle the pnl_summary aggregate
+        self._next_reconcile: float = 0.0         # throttle the live fill reconciler
+        self._live_halted: bool = False           # live-validation circuit breaker tripped
         self._stop = asyncio.Event()
         self._reload_open_positions()
 
@@ -156,6 +159,56 @@ class TradingApp:
             market.open_ts) is not None
 
     # ── fills ─────────────────────────────────────────────────────────────────
+    def _register_order_fill(self, order: Order, now: float) -> bool:
+        """Read one order's authoritative matched size and feed any new fill delta
+        to _on_fill (the live equivalent of the paper callback). Returns True if a
+        fill was registered. No-op in paper (matched is None -> the paper engine
+        delivers fills via callback)."""
+        matched = self.client.order_matched(order.order_id)
+        if matched is None:
+            return False  # transient API error / paper: don't guess, retry later
+        delta = matched - order.filled
+        if delta <= 1e-9:
+            return False
+        order.filled = matched  # before _on_fill so remaining/pop is correct
+        self._on_fill(Fill(
+            order_id=order.order_id, market_id=order.market_id,
+            token_id=order.token_id, outcome=order.outcome,
+            side=order.side, price=order.price, size=delta,
+            fee=0.0, ts=now, is_maker=True))
+        return True
+
+    def _check_live_guard(self) -> None:
+        """Live-validation circuit breaker. The paper edge is unproven live (maker
+        adverse selection isn't modelled), so after the first N resolved LIVE
+        trades, if cumulative net PnL <= floor OR win rate < min_wr, halt new live
+        entries and alert. Derived from the DB each call -> persists across
+        restarts. One-way trip: resume only after review (Claude.md / config)."""
+        if self.s.is_paper or not self.s.live_guard_enabled or self._live_halted:
+            return
+        st = self.store.live_guard_stats(self.s.live_guard_min_trades)
+        if st["n"] < self.s.live_guard_min_trades:
+            return  # still gathering the validation sample
+        if st["net_pnl"] > self.s.live_guard_min_pnl \
+                and st["win_rate"] >= self.s.live_guard_min_wr:
+            return  # first N live trades validated the edge
+        self._live_halted = True
+        msg = (f"LIVE GUARD TRIPPED: first {st['n']} live trades "
+               f"net {st['net_pnl']:+.2f} USD, WR {st['win_rate']:.0%} "
+               f"(floor {self.s.live_guard_min_pnl:+.2f} / min WR "
+               f"{self.s.live_guard_min_wr:.0%}). Halting new live entries.")
+        log.warning(msg)
+        self.notifier.send("⛔ " + msg + "\nInvestigate before resuming.")
+
+    def _reconcile_live_fills(self, now: float) -> None:
+        """Periodic live fill reconciler. The strategy is blind to live fills
+        otherwise: no Position is ever built, _evaluate never stops posting on a
+        window, and exposure ladders far past the cap as the price moves (the
+        wallet-drain bug, 2026-06-15). Paper mode is a no-op (callback)."""
+        for book in (self.orders, self.exit_orders):
+            for _market_id, order in list(book.items()):  # snapshot: _on_fill mutates
+                self._register_order_fill(order, now)
+
     def _on_fill(self, fill: Fill) -> None:
         market = self.markets.get(fill.market_id)
         fv = self.last_fv.get(fill.market_id)
@@ -201,7 +254,8 @@ class TradingApp:
             self.positions[fill.market_id] = pos
             self.risk.record_entry(market.window, fill.size * fill.price)
             fee_avoided = taker_fee(fill.size, self.s.fee_rate, fill.price)
-            self.store.record_entry(market, fv, fill, fee_avoided)
+            self.store.record_entry(market, fv, fill, fee_avoided,
+                                    is_live=not self.s.is_paper)
             self.store.record_calibration(market, fv)
             log.info("FILL %s %s %.0f @ %.3f (fair %.3f)", market.slug,
                      fill.outcome.value, fill.size, fill.price,
@@ -225,9 +279,13 @@ class TradingApp:
             self.orders.pop(fill.market_id, None)
 
     def _cancel_tracked(self, book: Dict[str, Order], market_id: str) -> None:
-        order = book.pop(market_id, None)
-        if order:
-            self.client.cancel_order(order.order_id)
+        # Only drop tracking once the cancel is CONFIRMED. If the cancel fails
+        # (e.g. CLOB read timeout on a flaky link) the order may still be live;
+        # forgetting it here lets the next cycle repost a duplicate -> double
+        # exposure with one order untracked. Keep it tracked and retry instead.
+        order = book.get(market_id)
+        if order and self.client.cancel_order(order.order_id):
+            book.pop(market_id, None)
 
     # ── discovery loop ────────────────────────────────────────────────────────
     async def discovery_loop(self) -> None:
@@ -257,10 +315,22 @@ class TradingApp:
     async def eval_loop(self) -> None:
         while not self._stop.is_set():
             now = utc_ts()
+            # Reconcile live fills BEFORE evaluating: a fill must register as a
+            # Position so _evaluate stops posting on that window (one trade/window).
+            if not self.s.is_paper and now >= self._next_reconcile:
+                self._next_reconcile = now + self.s.reconcile_interval_s
+                try:
+                    self._reconcile_live_fills(now)
+                except Exception:  # noqa: BLE001
+                    log.exception("live fill reconcile failed")
+                try:
+                    self._check_live_guard()
+                except Exception:  # noqa: BLE001
+                    log.exception("live guard check failed")
             for market in list(self.markets.values()):
                 try:
                     if now >= market.close_ts:
-                        self._settle(market, now)
+                        await self._settle(market, now)
                     else:
                         self._evaluate(market, now)
                 except Exception:  # noqa: BLE001
@@ -302,6 +372,13 @@ class TradingApp:
         if market.market_id in self.exited_markets:
             return  # one trade per window: no re-entry after an exit
 
+        if self._live_halted:
+            # circuit breaker tripped: no new live entries. Cancel any resting
+            # entry order so we stop adding exposure (positions above still exit).
+            if self.orders.get(market.market_id):
+                self._cancel_tracked(self.orders, market.market_id)
+            return
+
         decision = self.planner.plan_entry(market, fv, up_top, down_top, now_ts=now)
         order = self.orders.get(market.market_id)
 
@@ -311,17 +388,30 @@ class TradingApp:
             return
 
         if order is not None:
+            # Register any fill that landed since the last reconcile BEFORE we
+            # cancel/replace. Otherwise a "successful" cancel of an already-filled
+            # order drops it from tracking, orphaning the fill, and we repost on
+            # top of it -> the re-ladder path. If it filled, a Position now exists;
+            # bail and let next cycle route to _manage_position.
+            if self._register_order_fill(order, now):  # paper: no-op (matched None)
+                return
+            # Only drop tracking / repost once the cancel is CONFIRMED. A failed
+            # cancel (CLOB read-timeout on a flaky link) leaves the order live on
+            # the book; popping + reposting orphans it, the old order ALSO fills,
+            # and as the price moves this ladders fills at every level far past the
+            # $1 cap (the wallet-drain bug). On a failed cancel keep it tracked and
+            # retry next cycle instead.
             if decision.action != "post":
-                self.client.cancel_order(order.order_id)
-                self.orders.pop(market.market_id, None)
-                decision.action = "cancel"
-                decision.reason = "edge_gone:" + decision.reason
-                self.store.record_decision(decision)
+                if self.client.cancel_order(order.order_id):
+                    self.orders.pop(market.market_id, None)
+                    decision.action = "cancel"
+                    decision.reason = "edge_gone:" + decision.reason
+                    self.store.record_decision(decision)
             elif self.planner.should_replace(order.price, decision):
-                self.client.cancel_order(order.order_id)
-                self.orders.pop(market.market_id, None)
-                decision.action = "replace"
-                self._post(market, decision, now)
+                if self.client.cancel_order(order.order_id):
+                    self.orders.pop(market.market_id, None)
+                    decision.action = "replace"
+                    self._post(market, decision, now)
             return
 
         if decision.action != "post":
@@ -382,6 +472,12 @@ class TradingApp:
             return
         token = (market.token_up if pos.outcome == Outcome.UP
                  else market.token_down)
+        # Can't place a sell below Polymarket's 5-share maker floor — a partial
+        # fill may have shrunk the position under it. A sub-floor sell would just
+        # be rejected every tick; let the remainder ride to settlement (max loss
+        # is the cost already at risk on a bounded binary).
+        if pos.contracts < self.s.min_order_contracts:
+            return
         top = self.books.get_top(token)
         if top is None or top.best_bid is None or top.best_ask is None:
             return
@@ -407,46 +503,72 @@ class TradingApp:
             log.warning("exit order failed for %s: %s", market.slug, e)
 
     # ── settlement ────────────────────────────────────────────────────────────
-    def _settle(self, market: MarketInfo, now: float) -> None:
-        self._cancel_tracked(self.orders, market.market_id)
-        self._cancel_tracked(self.exit_orders, market.market_id)
+    def _local_grade(self, market: MarketInfo) -> Optional[bool]:
+        """Grade off our own resolution-feed buffer (instant, same data the market
+        settles on). Returns up_won, or None if we can't grade locally — no
+        opening reference, or the feed has no tick AT/AFTER the close (a reconnect
+        gap; grading off a pre-gap price mis-grades — the panama lesson)."""
         res_feed = self._res_feed(market)
-
-        # No opening reference and no feed history at the open: nothing can ever
-        # be graded here. Drop now instead of warn-spamming until the give-up.
         opening = market.opening_reference
         if opening is None:
             opening = res_feed.buffer.price_at_or_before(market.open_ts)
         if opening is None:
-            if self.positions.get(market.market_id):
-                # Can never grade this position locally — void it rather than
-                # leave it open forever (the zombie-trade bug).
-                self._void_position(market, "no_opening_ref", now)
-            else:
-                log.info("dropping %s: no opening reference (window opened "
-                         "before feed history)", market.slug)
-                self._drop_market(market.market_id)
-            return
-
-        # Staleness guard: only grade once the feed has a tick AT/AFTER the
-        # close — that proves we were connected across the boundary. Grading
-        # off a price from a reconnect gap mis-grades the trade (panama lesson).
+            return None
         as_of = res_feed.as_of_timestamp
-        feed_caught_up = as_of is not None and as_of >= market.close_ts
+        if as_of is None or as_of < market.close_ts:
+            return None
         close_px = res_feed.buffer.price_at_or_before(market.close_ts)
-        if close_px is None or not feed_caught_up:
+        if close_px is None:
+            return None
+        return close_px >= opening if market.tie_rule_up else close_px > opening
+
+    async def _oracle_resolution(self, market: MarketInfo, now: float) -> Optional[str]:
+        """Settlement fallback: Polymarket's real resolved outcome, polled
+        (throttled) when the local feed can't grade. Authoritative — it's the
+        oracle the market actually settles on — so it closes the void/accounting
+        gap when our feed missed the close on a flaky link."""
+        if now < self._oracle_poll_at.get(market.market_id, 0.0):
+            return None
+        self._oracle_poll_at[market.market_id] = now + self.s.oracle_poll_interval_s
+        try:
+            outcome = await self.discovery.fetch_resolution(market.slug)
+        except Exception:  # noqa: BLE001
+            log.exception("oracle resolution fetch failed for %s", market.slug)
+            return None
+        if outcome:
+            log.info("oracle resolution for %s: %s (local feed couldn't grade)",
+                     market.slug, outcome)
+        return outcome
+
+    async def _settle(self, market: MarketInfo, now: float) -> None:
+        self._cancel_tracked(self.orders, market.market_id)
+        self._cancel_tracked(self.exit_orders, market.market_id)
+        has_pos = self.positions.get(market.market_id) is not None
+
+        # 1) local feed (preferred: instant, no API). 2) oracle fallback when the
+        # feed missed the close. Only bother the oracle if we have something to
+        # grade — otherwise just drop the market.
+        up_won = self._local_grade(market)
+        if up_won is None and has_pos:
+            oracle = await self._oracle_resolution(market, now)
+            if oracle is not None:
+                up_won = (oracle == "UP")
+
+        if up_won is None:
+            # neither local nor oracle could grade yet
+            if not has_pos:
+                log.info("dropping %s: nothing to grade (no position, feed/oracle "
+                         "not resolved)", market.slug)
+                self._drop_market(market.market_id)
+                return
             if now >= self._settle_warn_at.get(market.market_id, 0.0):
                 self._settle_warn_at[market.market_id] = now + 30.0
-                log.warning("cannot settle %s yet (resolution feed not past "
-                            "close) — waiting", market.slug)
+                log.warning("cannot settle %s yet (local feed not past close, "
+                            "oracle not resolved) — waiting", market.slug)
             if now - market.close_ts > 300:
-                if self.positions.get(market.market_id):
-                    self._void_position(market, "feed_never_caught_up", now)
-                else:
-                    log.error("giving up local settlement for %s", market.slug)
-                    self._drop_market(market.market_id)
+                self._void_position(market, "ungradeable_local_and_oracle", now)
             return
-        up_won = close_px >= opening if market.tie_rule_up else close_px > opening
+
         outcome = "UP" if up_won else "DOWN"
         pos = self.positions.pop(market.market_id, None)
         if pos:
@@ -492,6 +614,7 @@ class TradingApp:
         self.exited_markets.discard(market_id)
         self._last_reject.pop(market_id, None)
         self._settle_warn_at.pop(market_id, None)
+        self._oracle_poll_at.pop(market_id, None)
 
     # ── metrics ───────────────────────────────────────────────────────────────
     def _update_metrics(self, now: float) -> None:

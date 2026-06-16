@@ -4,12 +4,31 @@ import json
 
 from bot.logging_db import BotStore
 from bot.market_discovery import (detect_resolution_feed, detect_window,
-                                  parse_market)
+                                  parse_market, parse_resolution)
 from bot.models import Decision, Fill, Outcome, ResolutionFeed, Side
 from tests.test_strategy import make_market, T0
 
 PREFIXES = {"btc-up-or-down-5m": "5m", "btc-up-or-down-15m": "15m",
             "bitcoin-up-or-down-": "1h"}
+
+
+def test_parse_resolution_decisive_outcomes():
+    up = {"closed": True, "outcomes": '["Up", "Down"]',
+          "outcomePrices": '["1", "0"]'}
+    down = {"closed": True, "outcomes": ["Up", "Down"],
+            "outcomePrices": ["0", "1"]}
+    assert parse_resolution(up) == "UP"
+    assert parse_resolution(down) == "DOWN"
+
+
+def test_parse_resolution_none_when_unresolved_or_ambiguous():
+    assert parse_resolution({"closed": False, "outcomes": '["Up","Down"]',
+                             "outcomePrices": '["1","0"]'}) is None  # not closed
+    assert parse_resolution({"closed": True, "outcomes": '["Up","Down"]',
+                             "outcomePrices": '["0.62","0.38"]'}) is None  # mid
+    assert parse_resolution({"closed": True}) is None                       # no prices
+    assert parse_resolution({"closed": True, "outcomes": '["Yes","No"]',
+                             "outcomePrices": '["1","0"]'}) is None  # not Up/Down
 
 
 def test_detect_window_exact_prefix_only():

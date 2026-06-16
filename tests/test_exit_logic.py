@@ -8,6 +8,7 @@ the first live paper run (June 2026):
 - _settle could grade a window off a price from before a reconnect gap.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -26,7 +27,16 @@ def app(settings):
     # path (the stop is disabled by default in prod, but the machinery remains).
     s = settings.model_copy(update={"prometheus_enabled": False,
                                     "enable_prob_stop": True})
-    return TradingApp(s)
+    app = TradingApp(s)
+
+    async def _no_oracle(slug):  # unit tests never hit the network
+        return None
+    app.discovery.fetch_resolution = _no_oracle
+    return app
+
+
+def settle(app, market, now):
+    return asyncio.run(app._settle(market, now))
 
 
 def make_market(market_id="m1", close_ts=T0 + 600.0):
@@ -179,11 +189,11 @@ def test_settle_waits_until_feed_past_close(app):
     buy_into_position(app, market, size=10.0, price=0.50)
     # feed last ticked BEFORE the close: a reconnect gap could hide the truth
     app.chainlink._update(100_050.0, T0 + 30)
-    app._settle(market, T0 + 70)
+    settle(app, market, T0 + 70)
     assert market.market_id in app.markets  # not graded yet
 
     app.chainlink._update(100_050.0, T0 + 61)  # tick past the close boundary
-    app._settle(market, T0 + 75)
+    settle(app, market, T0 + 75)
     assert market.market_id not in app.markets
     row = open_trade_row(app, market.market_id)
     assert row["resolution_outcome"] == "UP"   # 100050 >= 100000
@@ -198,7 +208,7 @@ def test_settle_with_partial_exit_uses_true_position_net(app):
                       price=0.60, size=4.0, fee=0.0, ts=T0 + 10))  # +0.40 realized
     app.chainlink._update(100_050.0, T0 + 59)  # last value before the close
     app.chainlink._update(100_050.0, T0 + 61)  # proves connectivity past it
-    app._settle(market, T0 + 70)
+    settle(app, market, T0 + 70)
     row = open_trade_row(app, market.market_id)
     # 6 remaining contracts win (6 * 0.50) plus 0.40 already realized
     assert row["net_pnl"] == pytest.approx(6 * 0.50 + 0.40)
@@ -212,7 +222,7 @@ def test_settle_drops_market_with_no_opening_reference(app):
     app.markets[market.market_id] = market
     app.chainlink._update(100_050.0, T0 + 30)   # first tick AFTER the open
     app.chainlink._update(100_050.0, T0 + 61)
-    app._settle(market, T0 + 65)
+    settle(app, market, T0 + 65)
     assert market.market_id not in app.markets
 
 
@@ -246,7 +256,7 @@ def test_pnl_summary_excludes_tagged_rows(app):
     buy_into_position(app, market, size=10.0, price=0.50)
     app.chainlink._update(100_050.0, market.close_ts - 1)
     app.chainlink._update(100_050.0, market.close_ts + 1)
-    app._settle(market, market.close_ts + 5)
+    settle(app, market, market.close_ts + 5)
     assert app.store.pnl_summary()["net_pnl"] == pytest.approx(5.0)
 
     app.store._conn.execute("UPDATE trades SET tag = 'pre_exit_fix_misgraded'")
@@ -298,7 +308,7 @@ def test_settle_voids_stranded_position(app):
     market = make_market(close_ts=T0 + 60)
     buy_into_position(app, market, size=10.0, price=0.50)
     app.chainlink._update(100_050.0, T0 + 30)        # tick BEFORE close, never after
-    app._settle(market, T0 + 60 + 301)               # past the 300s give-up window
+    settle(app, market, T0 + 60 + 301)               # past the 300s give-up window
     assert market.market_id not in app.positions
     assert market.market_id not in app.markets
     row = open_trade_row(app, market.market_id)
@@ -306,6 +316,28 @@ def test_settle_voids_stranded_position(app):
     assert row["resolution_outcome"] == "VOID"
     assert row["net_pnl"] == 0
     assert app.store.pnl_summary()["net_pnl"] == 0   # excluded from stats
+
+
+def test_settle_uses_oracle_when_local_feed_cannot_grade(app):
+    """Local feed missed the close (reconnect gap), but Polymarket resolved the
+    market: grade off the oracle instead of voiding — the real outcome lands in
+    P&L and the live-guard stats, not a void."""
+    market = make_market(close_ts=T0 + 60)
+    buy_into_position(app, market, size=10.0, price=0.50)  # UP position
+    app.chainlink._update(100_050.0, T0 + 30)              # tick BEFORE close only
+
+    async def _oracle_up(slug):
+        return "UP"
+    app.discovery.fetch_resolution = _oracle_up
+
+    settle(app, market, T0 + 90)   # local can't grade -> oracle says UP
+    assert market.market_id not in app.positions
+    row = open_trade_row(app, market.market_id)
+    assert row["resolved"] == 1
+    assert row["resolution_outcome"] == "UP"
+    assert row["net_pnl"] == pytest.approx(10.0 * (1 - 0.50))  # UP won
+    assert (row["tag"] or "") == ""                            # graded, not voided
+    assert app.store.pnl_summary()["net_pnl"] == pytest.approx(5.0)
 
 
 # ── risk: pending exposure ────────────────────────────────────────────────────

@@ -76,7 +76,14 @@ class Settings(BaseSettings):
     model_error_buffer: float = 0.05    # EV margin for sigma mis-estimation (0.04–0.06)
     drift_cap: float = 0.05             # max |ΔΦ(z)| the signal layer may cause
     tick_size: float = 0.01
-    min_order_contracts: float = 1.0   # tracks max_trade_usd: 5 -> 2 -> 1 (keeps max entry price $1.00)
+    min_order_contracts: float = 5.0   # Polymarket maker floor: orders <5 shares are rejected
+    min_notional_usd: float = 1.0      # Polymarket $1 notional floor (size*price must clear $1)
+    # Entry-price band: only buy where the fill price is in [min, max]. Default
+    # is wide-open (no restriction). Set MIN_ENTRY_PRICE=0.31 / MAX_ENTRY_PRICE=0.52
+    # in .env to trade ONLY the 31-52c spot (skip cheaper tails). The 0.52 top
+    # needs max_trade_usd >= 5*0.52 = $2.60 to afford the 5-share floor.
+    min_entry_price: float = 0.0
+    max_entry_price: float = 1.0
     # minutes-remaining entry gate per window: (min, max)
     entry_windows: Dict[str, Tuple[float, float]] = {
         "5m": (1.0, 3.5),
@@ -101,12 +108,30 @@ class Settings(BaseSettings):
     # ─── Risk (Claude.md §7) ─────────────────────────────────────────────────
     bankroll_usd: float = 100.0
     kelly_fraction: float = 0.25
-    max_trade_usd: float = 1.0          # hard cap dominates Kelly (5.0 -> 2.0 -> 1.0)
+    max_trade_usd: float = 2.6          # hard cap dominates Kelly. Must be >= 5*max_entry
+                                        # _price to afford the 5-share floor at the band
+                                        # top: $2.6 affords 5 shares up to $0.52. (Lower
+                                        # caps shrink the reachable band: $1.5 -> $0.30.)
     max_concurrent_positions: int = 3
     max_new_positions_per_window_per_day: int = 20
     max_capital_at_risk_usd: float = 50.0
     halt_streak_n: int = 4
     halt_minutes: float = 60.0
+    # Live fill reconciler cadence: poll each tracked order's matched size this
+    # often (s) and feed deltas to _on_fill. Live-only; paper uses the callback.
+    reconcile_interval_s: float = 1.0
+    # Settlement fallback: when the local feed can't grade a closed window, poll
+    # Polymarket's real resolution this often (s) before giving up and voiding.
+    oracle_poll_interval_s: float = 20.0
+    # Live-validation circuit breaker: after the first N resolved LIVE trades,
+    # halt new live entries if cumulative net PnL <= floor OR win rate < min_wr.
+    # The paper edge is unproven live (adverse selection isn't modelled); this
+    # caps a quiet bleed on an unattended bot at ~N trades. One-way trip: resume
+    # only after review (set live_guard_enabled=false or reset the live rows).
+    live_guard_enabled: bool = True
+    live_guard_min_trades: int = 20
+    live_guard_min_pnl: float = 0.0
+    live_guard_min_wr: float = 0.50
     exit_prob_floor: float = 0.25       # exit if our side's modelled P falls below this
     # Probability-space early-exit stop. DISABLED 2026-06-13: across 24 live-paper
     # exits it was net -$21.88 vs holding. On a hard-capped binary the stop mostly
