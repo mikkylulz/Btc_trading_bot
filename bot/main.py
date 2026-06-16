@@ -25,6 +25,7 @@ from .execution.polymarket_client import LiveClient, PaperClient
 from .alerts import Notifier
 from .logging_db import BotStore, setup_logging
 from .market_discovery import MarketDiscovery
+from .recorder import DataRecorder
 from .models import (Decision, FairValue, Fill, MarketInfo, Order, Outcome,
                      Position, ResolutionFeed, Side)
 from .monitoring import Metrics
@@ -67,6 +68,8 @@ class TradingApp:
         self.planner = OrderPlanner(settings)
         self.discovery = MarketDiscovery(settings)
         self.risk = RiskManager(settings)
+        self.recorder = (DataRecorder(settings.price_log_path, settings.book_log_path)
+                         if settings.record_data else None)
 
         self.paper_engine = PaperEngine(queue_penalty=settings.paper_queue_penalty,
                                         non_fill_prob=settings.paper_non_fill_prob)
@@ -327,6 +330,10 @@ class TradingApp:
                     self._check_live_guard()
                 except Exception:  # noqa: BLE001
                     log.exception("live guard check failed")
+            try:
+                self._record_data(now)
+            except Exception:  # noqa: BLE001
+                log.exception("data recording failed (non-fatal)")
             for market in list(self.markets.values()):
                 try:
                     if now >= market.close_ts:
@@ -510,6 +517,20 @@ class TradingApp:
             log.warning("exit order failed for %s: %s", market.slug, e)
 
     # ── settlement ────────────────────────────────────────────────────────────
+    def _record_data(self, now: float) -> None:
+        """Append the resolution price + each tracked token's book top to CSV for
+        offline backtesting. No-op unless record_data is set."""
+        if self.recorder is None:
+            return
+        self.recorder.record_price(self.chainlink.as_of_timestamp or now,
+                                   self.chainlink.last_value)
+        seen: set = set()
+        for m in list(self.markets.values()):
+            for tok in (m.token_up, m.token_down):
+                if tok and tok not in seen:
+                    seen.add(tok)
+                    self.recorder.record_book(now, tok, self.books.get_top(tok))
+
     def _local_grade(self, market: MarketInfo) -> Optional[bool]:
         """Grade off our own resolution-feed buffer (instant, same data the market
         settles on). Returns up_won, or None if we can't grade locally — no

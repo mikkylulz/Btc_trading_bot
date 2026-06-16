@@ -124,6 +124,11 @@ class Settings(BaseSettings):
     # Settlement fallback: when the local feed can't grade a closed window, poll
     # Polymarket's real resolution this often (s) before giving up and voiding.
     oracle_poll_interval_s: float = 20.0
+    # Offline-backtest data capture: record resolution price + book tops to CSV
+    # so a true edge backtest (recorded books, not synthetic) is possible later.
+    record_data: bool = False
+    price_log_path: str = "data/prices_chainlink.csv"
+    book_log_path: str = "data/books.csv"
     # Live-validation circuit breaker: after the first N resolved LIVE trades,
     # halt new live entries if cumulative net PnL <= floor OR win rate < min_wr.
     # The paper edge is unproven live (adverse selection isn't modelled); this
