@@ -192,3 +192,44 @@ def test_guard_ignores_paper_trades(guarded):
     _seed_live_trades(guarded, 20, net_each=-1.0, is_live=0)  # paper losers
     guarded._check_live_guard()
     assert guarded._live_halted is False
+
+
+# ── book-staleness guard ──────────────────────────────────────────────────────
+def test_no_entry_priced_off_a_stale_book(app, monkeypatch):
+    """A Polymarket WS disconnect leaves get_top returning the last-known book;
+    the bot must NOT price a new entry off it (but must once it's fresh again)."""
+    from bot.models import Decision, Order, Side
+    market = MarketInfo(
+        market_id="m1", slug="btc-updown-5m-1750000000", question="q",
+        window="5m", window_seconds=300, open_ts=T0, close_ts=T0 + 120,
+        resolution_feed=ResolutionFeed.CHAINLINK, token_up="TU", token_down="TD",
+        opening_reference=100_000.0)
+    app.markets[market.market_id] = market
+    monkeypatch.setattr(app.engine, "fair_value", lambda *a, **k: make_fv())
+    monkeypatch.setattr(app.planner, "plan_entry", lambda *a, **k: Decision(
+        market_id="m1", ts=T0, action="post", reason="edge", outcome=Outcome.UP,
+        fair_p=0.6, target_price=0.40))
+    posted = []
+
+    class C:
+        def place_maker_order(self, *a, **k):
+            posted.append(a)
+            return Order(order_id="o1", market_id="m1", token_id="TU",
+                         outcome=Outcome.UP, side=Side.BUY, price=0.40,
+                         size=5.0, placed_ts=T0)
+
+        def cancel_order(self, oid):
+            return True
+
+        def order_matched(self, oid):
+            return None
+    app.client = C()
+
+    app.books._last_msg_ts = T0 - 100.0   # book 100s old -> stale
+    app._evaluate(market, T0)
+    assert posted == []                   # no entry off a stale book
+    assert "m1" not in app.orders
+
+    app.books._last_msg_ts = T0           # book fresh again
+    app._evaluate(market, T0)
+    assert posted != []                   # now it posts (guard was the blocker)

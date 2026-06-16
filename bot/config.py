@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     chainlink_feed_id: str = ""         # BTC/USD feed ID from data.chain.link/streams/btc-usd
     chainlink_poll_interval_s: float = 1.0
     max_feed_age_s: float = 10.0        # resolution feed older than this => refuse to price
+    max_book_age_s: float = 10.0        # order book older than this => don't price an entry off it
     gateio_api_base: str = "https://api.gateio.ws"
 
     # ─── Discovery ───────────────────────────────────────────────────────────

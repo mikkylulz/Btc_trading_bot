@@ -379,6 +379,21 @@ class TradingApp:
                 self._cancel_tracked(self.orders, market.market_id)
             return
 
+        # Register any fill on a resting order FIRST — a fill is a fill regardless
+        # of book freshness or the entry window. This builds the Position (so we
+        # stop posting) and closes the orphan-on-replace race before any
+        # cancel/replace below. If it filled, route to _manage_position next cycle.
+        order = self.orders.get(market.market_id)
+        if order is not None and self._register_order_fill(order, now):
+            return
+
+        # Don't price a NEW entry (or reprice a resting one) off a STALE book:
+        # during a Polymarket WS disconnect get_top returns the last-known book.
+        # post_only already blocks a crossing fill, but this stops us acting on
+        # stale prices at all. A resting order is left untouched (it just rides).
+        if self.books.is_stale(self.s.max_book_age_s, now):
+            return
+
         decision = self.planner.plan_entry(market, fv, up_top, down_top, now_ts=now)
         order = self.orders.get(market.market_id)
 
@@ -388,19 +403,11 @@ class TradingApp:
             return
 
         if order is not None:
-            # Register any fill that landed since the last reconcile BEFORE we
-            # cancel/replace. Otherwise a "successful" cancel of an already-filled
-            # order drops it from tracking, orphaning the fill, and we repost on
-            # top of it -> the re-ladder path. If it filled, a Position now exists;
-            # bail and let next cycle route to _manage_position.
-            if self._register_order_fill(order, now):  # paper: no-op (matched None)
-                return
-            # Only drop tracking / repost once the cancel is CONFIRMED. A failed
-            # cancel (CLOB read-timeout on a flaky link) leaves the order live on
-            # the book; popping + reposting orphans it, the old order ALSO fills,
-            # and as the price moves this ladders fills at every level far past the
-            # $1 cap (the wallet-drain bug). On a failed cancel keep it tracked and
-            # retry next cycle instead.
+            # Fill already registered above. Confirmed-cancel: only drop tracking
+            # / repost when the cancel SUCCEEDS — a failed cancel (CLOB timeout on
+            # a flaky link) leaves the order live; popping + reposting orphans it
+            # and ladders fills past the cap (the wallet-drain bug). On a failed
+            # cancel keep it tracked and retry next cycle.
             if decision.action != "post":
                 if self.client.cancel_order(order.order_id):
                     self.orders.pop(market.market_id, None)
