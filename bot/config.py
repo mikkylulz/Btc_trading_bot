@@ -105,6 +105,15 @@ class Settings(BaseSettings):
     enable_funding: bool = False
     enable_oi: bool = False
     eval_interval_s: float = 1.0
+    # Trend guard: the Phi(z) model assumes ZERO drift, so it overrates the
+    # reversal (underdog) side. The band trades only the underdog, so in a
+    # sustained move it fades the trend and bleeds (live losses 2026-06-17:
+    # 5/5 bought the cheap reversal side, all lost as BTC drifted down). Skip a
+    # trade that bets AGAINST a drift exceeding trend_min_drift over the lookback.
+    # NOTE: defaults are a starting point — tune against the recorder backtest.
+    enable_trend_guard: bool = True
+    trend_lookback_s: float = 1800.0     # measure BTC drift over the last 30 min
+    trend_min_drift: float = 0.0010      # |return| >= 0.10% over the lookback = a trend
 
     # ─── Risk (Claude.md §7) ─────────────────────────────────────────────────
     bankroll_usd: float = 100.0

@@ -340,6 +340,24 @@ def test_settle_uses_oracle_when_local_feed_cannot_grade(app):
     assert app.store.pnl_summary()["net_pnl"] == pytest.approx(5.0)
 
 
+def test_trend_guard_blocks_against_trend(app):
+    """Downtrend: buying UP (the reversal/underdog) fades the trend -> blocked.
+    Buying DOWN rides it -> allowed. This is the live-loss pattern (2026-06-17)."""
+    market = make_market()                       # chainlink 15m
+    app.chainlink._update(66000.0, T0)
+    app.chainlink._update(65900.0, T0 + 1800)    # -0.15% over 30m (> 0.10% threshold)
+    now = T0 + 1800
+    assert app._fades_trend(market, Outcome.UP, now) is True     # fades the downtrend
+    assert app._fades_trend(market, Outcome.DOWN, now) is False   # rides it
+
+
+def test_trend_guard_allows_when_drift_is_noise(app):
+    market = make_market()
+    app.chainlink._update(66000.0, T0)
+    app.chainlink._update(65996.0, T0 + 1800)    # -0.006%, below threshold = noise
+    assert app._fades_trend(market, Outcome.UP, T0 + 1800) is False
+
+
 def test_live_settles_off_oracle_not_local(app):
     """LIVE: the local feed would grade UP, but Polymarket resolved DOWN. Live
     settlement must trust the oracle (what actually pays), not the local feed —

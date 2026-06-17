@@ -402,6 +402,12 @@ class TradingApp:
             return
 
         decision = self.planner.plan_entry(market, fv, up_top, down_top, now_ts=now)
+        # Trend guard: don't bet against a strong recent BTC move (the drift-less
+        # model overrates the reversal; the band trades only that side).
+        if (decision.action == "post" and self.s.enable_trend_guard
+                and decision.outcome is not None
+                and self._fades_trend(market, decision.outcome, now)):
+            decision.action, decision.reason = "reject", "fades_trend"
         order = self.orders.get(market.market_id)
 
         if not self.discovery.in_entry_window(market, now):
@@ -530,6 +536,22 @@ class TradingApp:
                 if tok and tok not in seen:
                     seen.add(tok)
                     self.recorder.record_book(now, tok, self.books.get_top(tok))
+
+    def _fades_trend(self, market: MarketInfo, outcome: Outcome, now: float) -> bool:
+        """True if buying `outcome` bets AGAINST a strong recent BTC drift. The
+        Phi(z) model assumes zero drift and overrates the reversal side, so in a
+        sustained move the underdog-only band systematically fades and loses
+        (live 2026-06-17). Measured on the resolution feed's own history."""
+        feed = self._res_feed(market)
+        now_px = feed.last_value
+        past_px = feed.buffer.price_at_or_before(now - self.s.trend_lookback_s)
+        if now_px is None or past_px is None or past_px <= 0:
+            return False  # not enough history — don't gate
+        drift = (now_px - past_px) / past_px
+        if abs(drift) < self.s.trend_min_drift:
+            return False  # no strong trend
+        return ((outcome == Outcome.UP and drift < 0)
+                or (outcome == Outcome.DOWN and drift > 0))
 
     def _local_grade(self, market: MarketInfo) -> Optional[bool]:
         """Grade off our own resolution-feed buffer (instant, same data the market
