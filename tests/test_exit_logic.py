@@ -340,6 +340,25 @@ def test_settle_uses_oracle_when_local_feed_cannot_grade(app):
     assert app.store.pnl_summary()["net_pnl"] == pytest.approx(5.0)
 
 
+def test_live_settles_off_oracle_not_local(app):
+    """LIVE: the local feed would grade UP, but Polymarket resolved DOWN. Live
+    settlement must trust the oracle (what actually pays), not the local feed —
+    the bug that graded a real loss as a +$5.04 win on 2026-06-17."""
+    app.s = app.s.model_copy(update={"live_mode": True})   # is_paper -> False
+    market = make_market(close_ts=T0 + 60)
+    buy_into_position(app, market, size=10.0, price=0.50)   # UP position
+    app.chainlink._update(100_050.0, T0 + 61)              # local would say UP (>=open)
+
+    async def _oracle_down(slug):
+        return "DOWN"
+    app.discovery.fetch_resolution = _oracle_down
+
+    settle(app, market, T0 + 70)
+    row = open_trade_row(app, market.market_id)
+    assert row["resolution_outcome"] == "DOWN"             # oracle, NOT the local UP
+    assert row["net_pnl"] == pytest.approx(-10.0 * 0.50)   # UP position lost
+
+
 # ── risk: pending exposure ────────────────────────────────────────────────────
 
 def test_pending_orders_consume_exposure_caps(settings):

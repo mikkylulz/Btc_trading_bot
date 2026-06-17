@@ -21,9 +21,14 @@ def test_parse_resolution_decisive_outcomes():
     assert parse_resolution(down) == "DOWN"
 
 
-def test_parse_resolution_none_when_unresolved_or_ambiguous():
+def test_parse_resolution_decisive_even_when_not_closed():
+    # Polymarket leaves closed=false for a while after the price resolves; a
+    # decisive split is still the real outcome (settlement only reads this post-close).
     assert parse_resolution({"closed": False, "outcomes": '["Up","Down"]',
-                             "outcomePrices": '["1","0"]'}) is None  # not closed
+                             "outcomePrices": '["0.0005","0.9995"]'}) == "DOWN"
+
+
+def test_parse_resolution_none_when_unresolved_or_ambiguous():
     assert parse_resolution({"closed": True, "outcomes": '["Up","Down"]',
                              "outcomePrices": '["0.62","0.38"]'}) is None  # mid
     assert parse_resolution({"closed": True}) is None                       # no prices

@@ -115,11 +115,14 @@ def parse_market(m: dict, prefixes: dict) -> Optional[MarketInfo]:
 
 def parse_resolution(m: dict) -> Optional[str]:
     """Polymarket's actual resolved outcome ('UP'/'DOWN') from a Gamma market
-    dict, or None if not yet decisively resolved. The winning outcome token
-    settles to 1.0 — we require a clear 1/0 split AND closed=true so we never
-    mistake a pre-resolution mid price (e.g. 0.62) for a resolution."""
-    if not m.get("closed"):
-        return None
+    dict, or None if not yet decisively resolved. The winning token settles to
+    ~1.0 — we require a clear 1/0 split.
+
+    We do NOT require the `closed` flag: Polymarket leaves it false for a while
+    AFTER the price has decisively resolved (observed 2026-06-17: outcomePrices
+    [0.0005, 0.9995] with closed=false). Settlement only consults this AFTER the
+    window has closed (now >= close_ts), so a converged price IS the result; the
+    tight 0.99/0.01 threshold guards against a mid-window odds reading."""
     prices = m.get("outcomePrices")
     outcomes = m.get("outcomes")
     if isinstance(prices, str):

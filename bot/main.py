@@ -551,10 +551,10 @@ class TradingApp:
         return close_px >= opening if market.tie_rule_up else close_px > opening
 
     async def _oracle_resolution(self, market: MarketInfo, now: float) -> Optional[str]:
-        """Settlement fallback: Polymarket's real resolved outcome, polled
-        (throttled) when the local feed can't grade. Authoritative — it's the
-        oracle the market actually settles on — so it closes the void/accounting
-        gap when our feed missed the close on a flaky link."""
+        """Polymarket's real resolved outcome, polled (throttled). Authoritative —
+        it's what the market actually PAYS — so it's the PRIMARY grade for live
+        trades (the local feed can disagree at the boundary) and the fallback for
+        paper. Returns None until Polymarket's price has decisively resolved."""
         if now < self._oracle_poll_at.get(market.market_id, 0.0):
             return None
         self._oracle_poll_at[market.market_id] = now + self.s.oracle_poll_interval_s
@@ -573,14 +573,37 @@ class TradingApp:
         self._cancel_tracked(self.exit_orders, market.market_id)
         has_pos = self.positions.get(market.market_id) is not None
 
-        # 1) local feed (preferred: instant, no API). 2) oracle fallback when the
-        # feed missed the close. Only bother the oracle if we have something to
-        # grade — otherwise just drop the market.
-        up_won = self._local_grade(market)
-        if up_won is None and has_pos:
+        # Grading priority differs by mode:
+        #  LIVE  — the oracle (Polymarket's real outcome) is what actually PAYS;
+        #          the local feed can disagree at the boundary (it graded a loss
+        #          as a win 2026-06-17). Prefer the oracle and WAIT for it rather
+        #          than trust the local feed; fall back to local only as a last
+        #          resort near the give-up timeout.
+        #  PAPER — local grade is the simulated rule (instant, no API spam);
+        #          oracle only as a fallback when local can't grade.
+        up_won: Optional[bool] = None
+        if not self.s.is_paper and has_pos:
             oracle = await self._oracle_resolution(market, now)
             if oracle is not None:
                 up_won = (oracle == "UP")
+            elif now - market.close_ts <= 300:
+                if now >= self._settle_warn_at.get(market.market_id, 0.0):
+                    self._settle_warn_at[market.market_id] = now + 30.0
+                    log.warning("cannot settle %s yet (awaiting Polymarket oracle "
+                                "resolution) — waiting", market.slug)
+                return  # don't grade live off the local feed; wait for the oracle
+            else:
+                up_won = self._local_grade(market)
+                if up_won is not None:
+                    log.warning("settling %s off LOCAL feed (oracle never resolved "
+                                "past give-up) — may differ from actual payout",
+                                market.slug)
+        else:
+            up_won = self._local_grade(market)
+            if up_won is None and has_pos:
+                oracle = await self._oracle_resolution(market, now)
+                if oracle is not None:
+                    up_won = (oracle == "UP")
 
         if up_won is None:
             # neither local nor oracle could grade yet
