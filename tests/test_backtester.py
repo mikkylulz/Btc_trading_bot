@@ -2,8 +2,8 @@
 net-negative scenario is reported as FAIL, not buried (Claude.md §9/§14)."""
 
 from bot.backtester import (Backtester, BacktestReport, BacktestTrade,
-                            generate_gbm_prices)
-from bot.models import Outcome
+                            generate_gbm_prices, load_recorded_books)
+from bot.models import BookTop, Outcome
 
 
 def test_gross_positive_net_negative_is_fail():
@@ -38,6 +38,42 @@ def test_maker_backtest_runs_and_charges_no_fees(settings):
     assert all(t.fee == 0.0 and t.fill_type == "maker" for t in report.trades)
     # maker fills require trade-through: fill rate must be < 100% in general
     assert report.fill_rate <= 1.0
+
+
+def test_load_recorded_books_groups_by_window_and_side(tmp_path):
+    p = tmp_path / "books.csv"
+    p.write_text(
+        "ts,slug,side,token_id,best_bid,best_ask,bid_size,ask_size\n"
+        "20.0,btc-updown-5m-1000,UP,TU,0.10,0.12,5,5\n"
+        "10.0,btc-updown-5m-1000,UP,TU,0.09,0.11,5,5\n"   # out of order on purpose
+        "15.0,btc-updown-5m-1000,DOWN,TD,0.88,0.90,5,5\n"
+        "30.0,btc-updown-5m-1300,UP,TU,0.20,0.22,5,5\n")
+    books = load_recorded_books(str(p))
+    assert set(books) == {1000, 1300}                 # open_ts parsed from slug
+    up = books[1000]["UP"]
+    assert [ts for ts, _ in up] == [10.0, 20.0]        # sorted by ts
+    assert up[1][1].best_ask == 0.12
+    assert books[1000]["DOWN"][0][1].best_bid == 0.88
+
+
+def test_recorded_top_at_or_before(settings):
+    bt = Backtester(settings, window="5m")
+    a = BookTop(token_id="TU", best_bid=0.10, best_ask=0.12)
+    b = BookTop(token_id="TU", best_bid=0.18, best_ask=0.20)
+    window = {"UP": [(10.0, a), (20.0, b)]}
+    assert bt._recorded_top(window, "UP", 5.0) is None     # nothing yet
+    assert bt._recorded_top(window, "UP", 15.0) is a       # latest <= 15
+    assert bt._recorded_top(window, "UP", 25.0) is b
+    assert bt._recorded_top(window, "DOWN", 25.0) is None   # side absent
+
+
+def test_recorded_books_sets_real_edge_mode(settings):
+    prices = generate_gbm_prices(6 * 3600, seed=3)
+    bt = Backtester(settings, window="15m", seed=5,
+                    recorded_books={123: {"UP": [], "DOWN": []}})
+    report = bt.run(prices)
+    assert "RECORDED" in report.mode                    # honest mode label
+    assert report.windows > 0
 
 
 def test_taker_mode_pays_real_fees(settings):

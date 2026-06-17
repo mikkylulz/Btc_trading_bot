@@ -154,6 +154,36 @@ def load_prices_csv(path: str) -> List[Tuple[float, float]]:
     return out
 
 
+def load_recorded_books(path: str) -> dict:
+    """Recorded book tops grouped by window-open-ts then side, each sorted by ts:
+        {open_ts: {"UP": [(ts, BookTop), ...], "DOWN": [...]}}
+    open_ts is parsed from the slug suffix (recurring series use
+    '<prefix><open_unix_ts>'). Feeds the backtester REAL books per window."""
+    out: dict = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            side = row.get("side")
+            if side not in ("UP", "DOWN"):
+                continue
+            try:
+                open_ts = int(str(row["slug"]).rsplit("-", 1)[-1])
+                ts = float(row["ts"])
+            except (ValueError, KeyError, AttributeError):
+                continue
+            bid = float(row["best_bid"]) if row.get("best_bid") else None
+            ask = float(row["best_ask"]) if row.get("best_ask") else None
+            top = BookTop(token_id=row.get("token_id", ""), best_bid=bid,
+                          best_ask=ask,
+                          bid_size=float(row["bid_size"] or 0) if row.get("bid_size") else 0.0,
+                          ask_size=float(row["ask_size"] or 0) if row.get("ask_size") else 0.0,
+                          as_of=ts)
+            out.setdefault(open_ts, {}).setdefault(side, []).append((ts, top))
+    for window in out.values():
+        for lst in window.values():
+            lst.sort(key=lambda x: x[0])
+    return out
+
+
 def generate_gbm_prices(n_seconds: int, start_price: float = 100_000.0,
                         vol_per_sec: float = 2e-4, seed: int = 7,
                         start_ts: float = 1_750_000_000.0) -> List[Tuple[float, float]]:
@@ -171,7 +201,7 @@ class Backtester:
                  synthetic: Optional[SyntheticBookParams] = None,
                  non_fill_prob: float = 0.3, eval_step_s: float = 5.0,
                  taker_mode: bool = False, sigma_lookback_s: float = 1800.0,
-                 seed: int = 11):
+                 seed: int = 11, recorded_books: Optional[dict] = None):
         self.s = settings
         self.window = window
         self.window_seconds = WINDOW_SECONDS[window]
@@ -182,6 +212,24 @@ class Backtester:
         self.sigma_lookback_s = sigma_lookback_s
         self.rng = random.Random(seed)
         self.planner = OrderPlanner(settings)
+        # {open_ts: {"UP"/"DOWN": [(ts, BookTop)]}} from the recorder. When a
+        # window has recorded books, run() replays the REAL book (measures edge)
+        # instead of synthesising one (which only validates calibration).
+        self.recorded_books = recorded_books or {}
+
+    def _recorded_top(self, window: dict, side: str, t: float):
+        """The recorded top for `side` at-or-before time t (latest <= t), else None."""
+        series = window.get(side) if window else None
+        if not series:
+            return None
+        lo, hi = 0, len(series)
+        while lo < hi:  # bisect_right on ts
+            mid = (lo + hi) // 2
+            if series[mid][0] <= t:
+                lo = mid + 1
+            else:
+                hi = mid
+        return series[lo - 1][1] if lo > 0 else None
 
     # ── walk-forward sigma from the same series, past data only ──────────────
     def _sigma(self, prices: List[Tuple[float, float]], idx_end: int,
@@ -213,6 +261,7 @@ class Backtester:
     def run(self, prices: List[Tuple[float, float]]) -> BacktestReport:
         report = BacktestReport(
             mode=("taker (test mode)" if self.taker_mode else
+                  "maker-only, RECORDED books (real edge)" if self.recorded_books else
                   "maker-only, synthetic book (mechanics+calibration; NOT edge proof)"))
         if len(prices) < self.window_seconds * 2:
             log.warning("price series too short for window %s", self.window)
@@ -248,6 +297,7 @@ class Backtester:
 
             # one synthetic mispricing per window (book noise persists within a window)
             mis = self.rng.gauss(0.0, self.synthetic.noise_sd)
+            rec = self.recorded_books.get(int(round(wstart)))  # real books, if recorded
             entered = False
             resting: Optional[tuple] = None   # (outcome, price, modelled_p, z)
 
@@ -271,13 +321,21 @@ class Backtester:
                                remaining_frac=remaining, drift_adj=0.0,
                                feed_price=price_now, opening_reference=open_ref,
                                as_of=t)
-                up_top = self._synthetic_top(p_up, mis)
-                down_top = BookTop(token_id="DOWN",
-                                   best_bid=round((1 - up_top.best_ask) / self.s.tick_size)
-                                   * self.s.tick_size,
-                                   best_ask=round((1 - up_top.best_bid) / self.s.tick_size)
-                                   * self.s.tick_size,
-                                   bid_size=up_top.ask_size, ask_size=up_top.bid_size)
+                if rec is not None:
+                    # replay the REAL recorded book for this window/instant
+                    up_top = self._recorded_top(rec, "UP", t)
+                    down_top = self._recorded_top(rec, "DOWN", t)
+                    if up_top is None or down_top is None:
+                        t += self.eval_step_s
+                        continue
+                else:
+                    up_top = self._synthetic_top(p_up, mis)
+                    down_top = BookTop(token_id="DOWN",
+                                       best_bid=round((1 - up_top.best_ask) / self.s.tick_size)
+                                       * self.s.tick_size,
+                                       best_ask=round((1 - up_top.best_bid) / self.s.tick_size)
+                                       * self.s.tick_size,
+                                       bid_size=up_top.ask_size, ask_size=up_top.bid_size)
 
                 # maker fill check for a resting order: book trades through our bid
                 if resting is not None and not entered:

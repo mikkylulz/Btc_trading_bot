@@ -15,7 +15,8 @@ import math
 import sys
 from typing import Dict, Optional
 
-from .backtester import Backtester, generate_gbm_prices, load_prices_csv
+from .backtester import (Backtester, generate_gbm_prices, load_prices_csv,
+                         load_recorded_books)
 from .config import Settings, load_settings
 from .data_feeds import (ChainlinkFeed, PolymarketBookFeed, RTDSChainlinkFeed,
                          SpotWebsocketFeed)
@@ -530,12 +531,11 @@ class TradingApp:
             return
         self.recorder.record_price(self.chainlink.as_of_timestamp or now,
                                    self.chainlink.last_value)
-        seen: set = set()
         for m in list(self.markets.values()):
-            for tok in (m.token_up, m.token_down):
-                if tok and tok not in seen:
-                    seen.add(tok)
-                    self.recorder.record_book(now, tok, self.books.get_top(tok))
+            self.recorder.record_book(now, m.slug, "UP", m.token_up,
+                                      self.books.get_top(m.token_up))
+            self.recorder.record_book(now, m.slug, "DOWN", m.token_down,
+                                      self.books.get_top(m.token_down))
 
     def _fades_trend(self, market: MarketInfo, outcome: Outcome, now: float) -> bool:
         """True if buying `outcome` bets AGAINST a strong recent BTC drift. The
@@ -754,7 +754,14 @@ def cmd_backtest(settings: Settings, args) -> None:
         prices = generate_gbm_prices(args.hours * 3600)
         print(f"no --csv given: synthetic GBM, {args.hours}h @ 1s "
               "(pipeline smoke test, NOT an edge measurement)")
-    bt = Backtester(settings, window=args.window, taker_mode=args.taker)
+    recorded = None
+    if args.books:
+        recorded = load_recorded_books(args.books)
+        nwin = sum(1 for w in recorded if any(recorded[w].values()))
+        print(f"loaded recorded books for {nwin} windows from {args.books} "
+              "-> REAL-edge mode (replaying actual books)")
+    bt = Backtester(settings, window=args.window, taker_mode=args.taker,
+                    recorded_books=recorded)
     print(bt.run(prices).summary())
 
 
@@ -797,6 +804,8 @@ def main(argv=None) -> int:
     sub.add_parser("status")
     bt = sub.add_parser("backtest")
     bt.add_argument("--csv", help="resolution-feed price CSV (ts,price; 1s cadence)")
+    bt.add_argument("--books", help="recorded book CSV (data/books.csv) for a "
+                    "REAL-edge backtest; without it the book is synthetic")
     bt.add_argument("--window", default="15m", choices=["5m", "15m", "1h"])
     bt.add_argument("--hours", type=int, default=48, help="synthetic hours if no CSV")
     bt.add_argument("--taker", action="store_true",
