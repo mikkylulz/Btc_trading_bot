@@ -88,7 +88,12 @@ class TradingApp:
             self.live = False
 
         self.markets: Dict[str, MarketInfo] = {}
-        self.orders: Dict[str, Order] = {}        # market_id -> resting entry order
+        self.orders: Dict[str, Order] = {}        # market_id -> CURRENT resting entry order
+        # order_id -> Order for EVERY entry order placed (incl. ones we cancelled):
+        # a "cancel" can race a fill (cancel returns ok but the order already
+        # filled), so we must reconcile cancelled order ids too or the fill is
+        # orphaned — untracked real exposure (the 2-fills-1-recorded bug 2026-06-17).
+        self._order_ledger: Dict[str, Order] = {}
         self.exit_orders: Dict[str, Order] = {}   # market_id -> resting exit order
         self.positions: Dict[str, Position] = {}  # market_id -> position
         self.last_fv: Dict[str, FairValue] = {}
@@ -208,10 +213,17 @@ class TradingApp:
         """Periodic live fill reconciler. The strategy is blind to live fills
         otherwise: no Position is ever built, _evaluate never stops posting on a
         window, and exposure ladders far past the cap as the price moves (the
-        wallet-drain bug, 2026-06-15). Paper mode is a no-op (callback)."""
-        for book in (self.orders, self.exit_orders):
-            for _market_id, order in list(book.items()):  # snapshot: _on_fill mutates
-                self._register_order_fill(order, now)
+        wallet-drain bug, 2026-06-15). Paper mode is a no-op (callback).
+
+        Reconciles EVERY placed order id (the ledger), not just the current
+        resting one — a cancelled order can have filled before the cancel landed,
+        and that fill must still be registered or it's orphaned (2026-06-17)."""
+        for oid, order in list(self._order_ledger.items()):  # snapshot: _on_fill mutates
+            self._register_order_fill(order, now)
+            if order.remaining <= 1e-9:        # fully filled -> done reconciling it
+                self._order_ledger.pop(oid, None)
+        for _market_id, order in list(self.exit_orders.items()):
+            self._register_order_fill(order, now)
 
     def _on_fill(self, fill: Fill) -> None:
         market = self.markets.get(fill.market_id)
@@ -474,6 +486,7 @@ class TradingApp:
             self.store.record_decision(decision)
             return
         self.orders[market.market_id] = order
+        self._order_ledger[order.order_id] = order  # reconcile even if later cancelled
         self.store.record_decision(decision)
         log.info("POST %s %s %.0f @ %.3f (fair %.3f, edge %.3f)", market.slug,
                  decision.outcome.value, order.size, order.price,
@@ -593,6 +606,14 @@ class TradingApp:
     async def _settle(self, market: MarketInfo, now: float) -> None:
         self._cancel_tracked(self.orders, market.market_id)
         self._cancel_tracked(self.exit_orders, market.market_id)
+        # Final fill check on every order placed on this window before grading —
+        # catches a fill that landed right at close (incl. on a 'cancelled' order)
+        # so the position reflects true exposure, not an orphaned subset.
+        for oid, order in list(self._order_ledger.items()):
+            if order.market_id == market.market_id:
+                self._register_order_fill(order, now)
+                if order.remaining <= 1e-9:
+                    self._order_ledger.pop(oid, None)
         has_pos = self.positions.get(market.market_id) is not None
 
         # Grading priority differs by mode:
@@ -688,6 +709,8 @@ class TradingApp:
         self._last_reject.pop(market_id, None)
         self._settle_warn_at.pop(market_id, None)
         self._oracle_poll_at.pop(market_id, None)
+        self._order_ledger = {oid: o for oid, o in self._order_ledger.items()
+                              if o.market_id != market_id}
 
     # ── metrics ───────────────────────────────────────────────────────────────
     def _update_metrics(self, now: float) -> None:

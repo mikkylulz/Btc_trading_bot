@@ -55,7 +55,29 @@ def track_entry(app, market, size=5.0, price=0.20):
                   token_id=market.token_up, outcome=Outcome.UP, side=Side.BUY,
                   price=price, size=size, placed_ts=T0)
     app.orders[market.market_id] = order
+    app._order_ledger[order.order_id] = order   # production adds to both
     return order
+
+
+def test_orphaned_cancelled_order_fill_is_reconciled(app):
+    """A 'cancelled' order can have already filled (cancel raced the fill). Its
+    fill must still be registered via the ledger, not orphaned as untracked real
+    exposure (the 2-fills-1-recorded bug, 2026-06-17)."""
+    market = make_market()
+    app.markets[market.market_id] = market
+    app.last_fv[market.market_id] = make_fv()
+    # placed, then dropped from self.orders on a 'successful' cancel — but it
+    # actually filled. Only the ledger still references it.
+    orphan = Order(order_id="orphan1", market_id=market.market_id,
+                   token_id=market.token_up, outcome=Outcome.UP, side=Side.BUY,
+                   price=0.18, size=5.0, placed_ts=T0)
+    app._order_ledger["orphan1"] = orphan        # in ledger, NOT in app.orders
+    app.client = FakeClient({"orphan1": 5.0})    # CLOB: it filled
+
+    app._reconcile_live_fills(T0 + 1)
+    assert market.market_id in app.positions
+    assert app.positions[market.market_id].contracts == pytest.approx(5.0)
+    assert "orphan1" not in app._order_ledger    # fully filled -> dropped from ledger
 
 
 def test_partial_then_full_fill_builds_one_position(app):
