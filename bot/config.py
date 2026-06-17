@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     record_data: bool = False
     price_log_path: str = "data/prices_chainlink.csv"
     book_log_path: str = "data/books.csv"
+    outcome_log_path: str = "data/outcomes.csv"  # real oracle outcome per window
     # Live-validation circuit breaker: after the first N resolved LIVE trades,
     # halt new live entries if cumulative net PnL <= floor OR win rate < min_wr.
     # The paper edge is unproven live (adverse selection isn't modelled); this

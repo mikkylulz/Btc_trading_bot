@@ -16,7 +16,7 @@ import sys
 from typing import Dict, Optional
 
 from .backtester import (Backtester, generate_gbm_prices, load_prices_csv,
-                         load_recorded_books)
+                         load_recorded_books, load_recorded_outcomes)
 from .config import Settings, load_settings
 from .data_feeds import (ChainlinkFeed, PolymarketBookFeed, RTDSChainlinkFeed,
                          SpotWebsocketFeed)
@@ -69,7 +69,8 @@ class TradingApp:
         self.planner = OrderPlanner(settings)
         self.discovery = MarketDiscovery(settings)
         self.risk = RiskManager(settings)
-        self.recorder = (DataRecorder(settings.price_log_path, settings.book_log_path)
+        self.recorder = (DataRecorder(settings.price_log_path, settings.book_log_path,
+                                      settings.outcome_log_path)
                          if settings.record_data else None)
 
         self.paper_engine = PaperEngine(queue_penalty=settings.paper_queue_penalty,
@@ -616,52 +617,47 @@ class TradingApp:
                     self._order_ledger.pop(oid, None)
         has_pos = self.positions.get(market.market_id) is not None
 
-        # Grading priority differs by mode:
-        #  LIVE  — the oracle (Polymarket's real outcome) is what actually PAYS;
-        #          the local feed can disagree at the boundary (it graded a loss
-        #          as a win 2026-06-17). Prefer the oracle and WAIT for it rather
-        #          than trust the local feed; fall back to local only as a last
-        #          resort near the give-up timeout.
-        #  PAPER — local grade is the simulated rule (instant, no API spam);
-        #          oracle only as a fallback when local can't grade.
+        # Grade off the ORACLE (Polymarket's real outcome) in BOTH modes — the
+        # local feed disagrees at the boundary (it graded near-tie losses as wins,
+        # live AND paper, 2026-06-17). Wait for the oracle; fall back to the local
+        # feed only as a last resort past the give-up timeout.
         up_won: Optional[bool] = None
-        if not self.s.is_paper and has_pos:
+        graded_by_oracle = False
+        if has_pos:
             oracle = await self._oracle_resolution(market, now)
             if oracle is not None:
                 up_won = (oracle == "UP")
+                graded_by_oracle = True
             elif now - market.close_ts <= 300:
                 if now >= self._settle_warn_at.get(market.market_id, 0.0):
                     self._settle_warn_at[market.market_id] = now + 30.0
                     log.warning("cannot settle %s yet (awaiting Polymarket oracle "
                                 "resolution) — waiting", market.slug)
-                return  # don't grade live off the local feed; wait for the oracle
+                return  # don't grade off the local feed; wait for the oracle
             else:
                 up_won = self._local_grade(market)
                 if up_won is not None:
                     log.warning("settling %s off LOCAL feed (oracle never resolved "
                                 "past give-up) — may differ from actual payout",
                                 market.slug)
-        else:
-            up_won = self._local_grade(market)
-            if up_won is None and has_pos:
-                oracle = await self._oracle_resolution(market, now)
-                if oracle is not None:
-                    up_won = (oracle == "UP")
 
         if up_won is None:
-            # neither local nor oracle could grade yet
             if not has_pos:
-                log.info("dropping %s: nothing to grade (no position, feed/oracle "
-                         "not resolved)", market.slug)
+                log.info("dropping %s: nothing to grade (no position)", market.slug)
                 self._drop_market(market.market_id)
                 return
             if now >= self._settle_warn_at.get(market.market_id, 0.0):
                 self._settle_warn_at[market.market_id] = now + 30.0
-                log.warning("cannot settle %s yet (local feed not past close, "
-                            "oracle not resolved) — waiting", market.slug)
+                log.warning("cannot settle %s yet (oracle not resolved) — waiting",
+                            market.slug)
             if now - market.close_ts > 300:
                 self._void_position(market, "ungradeable_local_and_oracle", now)
             return
+
+        # Record the REAL outcome (oracle-sourced) per window so the backtester
+        # can grade off Polymarket's result, not the price-series approximation.
+        if graded_by_oracle and self.recorder is not None:
+            self.recorder.record_outcome(market.slug, "UP" if up_won else "DOWN")
 
         outcome = "UP" if up_won else "DOWN"
         pos = self.positions.pop(market.market_id, None)
@@ -783,8 +779,13 @@ def cmd_backtest(settings: Settings, args) -> None:
         nwin = sum(1 for w in recorded if any(recorded[w].values()))
         print(f"loaded recorded books for {nwin} windows from {args.books} "
               "-> REAL-edge mode (replaying actual books)")
+    outcomes = None
+    if args.outcomes:
+        outcomes = load_recorded_outcomes(args.outcomes)
+        print(f"loaded {len(outcomes)} real oracle outcomes from {args.outcomes} "
+              "-> grading off Polymarket results, not close-vs-open")
     bt = Backtester(settings, window=args.window, taker_mode=args.taker,
-                    recorded_books=recorded)
+                    recorded_books=recorded, recorded_outcomes=outcomes)
     print(bt.run(prices).summary())
 
 
@@ -829,6 +830,8 @@ def main(argv=None) -> int:
     bt.add_argument("--csv", help="resolution-feed price CSV (ts,price; 1s cadence)")
     bt.add_argument("--books", help="recorded book CSV (data/books.csv) for a "
                     "REAL-edge backtest; without it the book is synthetic")
+    bt.add_argument("--outcomes", help="recorded oracle-outcome CSV "
+                    "(data/outcomes.csv) to grade off Polymarket's real results")
     bt.add_argument("--window", default="15m", choices=["5m", "15m", "1h"])
     bt.add_argument("--hours", type=int, default=48, help="synthetic hours if no CSV")
     bt.add_argument("--taker", action="store_true",

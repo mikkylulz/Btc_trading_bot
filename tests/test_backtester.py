@@ -2,7 +2,8 @@
 net-negative scenario is reported as FAIL, not buried (Claude.md §9/§14)."""
 
 from bot.backtester import (Backtester, BacktestReport, BacktestTrade,
-                            generate_gbm_prices, load_recorded_books)
+                            generate_gbm_prices, load_recorded_books,
+                            load_recorded_outcomes)
 from bot.models import BookTop, Outcome
 
 
@@ -65,6 +66,22 @@ def test_recorded_top_at_or_before(settings):
     assert bt._recorded_top(window, "UP", 15.0) is a       # latest <= 15
     assert bt._recorded_top(window, "UP", 25.0) is b
     assert bt._recorded_top(window, "DOWN", 25.0) is None   # side absent
+
+
+def test_load_recorded_outcomes(tmp_path):
+    p = tmp_path / "outcomes.csv"
+    p.write_text("slug,outcome\n"
+                 "btc-updown-5m-1000,DOWN\n"
+                 "btc-updown-5m-1300,UP\n"
+                 "btc-updown-5m-1600,bad\n")   # non UP/DOWN -> skipped
+    out = load_recorded_outcomes(str(p))
+    assert out == {1000: "DOWN", 1300: "UP"}
+
+
+def test_recorded_outcome_overrides_price_series_grade(settings):
+    # the backtester grades off the recorded oracle outcome when present
+    bt = Backtester(settings, window="15m", recorded_outcomes={1000: "DOWN"})
+    assert bt.recorded_outcomes.get(1000) == "DOWN"
 
 
 def test_recorded_books_sets_real_edge_mode(settings):

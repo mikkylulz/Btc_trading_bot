@@ -184,6 +184,23 @@ def load_recorded_books(path: str) -> dict:
     return out
 
 
+def load_recorded_outcomes(path: str) -> dict:
+    """Real (oracle) outcome per window: {open_ts: "UP"/"DOWN"}. Lets the
+    backtester grade off Polymarket's actual result instead of the price-series
+    close-vs-open proxy (which disagrees on near-ties)."""
+    out: dict = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            o = row.get("outcome")
+            if o not in ("UP", "DOWN"):
+                continue
+            try:
+                out[int(str(row["slug"]).rsplit("-", 1)[-1])] = o
+            except (ValueError, KeyError, AttributeError):
+                continue
+    return out
+
+
 def generate_gbm_prices(n_seconds: int, start_price: float = 100_000.0,
                         vol_per_sec: float = 2e-4, seed: int = 7,
                         start_ts: float = 1_750_000_000.0) -> List[Tuple[float, float]]:
@@ -201,7 +218,8 @@ class Backtester:
                  synthetic: Optional[SyntheticBookParams] = None,
                  non_fill_prob: float = 0.3, eval_step_s: float = 5.0,
                  taker_mode: bool = False, sigma_lookback_s: float = 1800.0,
-                 seed: int = 11, recorded_books: Optional[dict] = None):
+                 seed: int = 11, recorded_books: Optional[dict] = None,
+                 recorded_outcomes: Optional[dict] = None):
         self.s = settings
         self.window = window
         self.window_seconds = WINDOW_SECONDS[window]
@@ -216,6 +234,9 @@ class Backtester:
         # window has recorded books, run() replays the REAL book (measures edge)
         # instead of synthesising one (which only validates calibration).
         self.recorded_books = recorded_books or {}
+        # {open_ts: "UP"/"DOWN"} real Polymarket outcomes; when present we grade
+        # the window off the oracle result, not close-vs-open (near-tie accuracy).
+        self.recorded_outcomes = recorded_outcomes or {}
 
     def _recorded_top(self, window: dict, side: str, t: float):
         """The recorded top for `side` at-or-before time t (latest <= t), else None."""
@@ -285,7 +306,10 @@ class Backtester:
                 continue
             open_ref = prices[i_open][1]
             close_px = prices[i_close][1]
-            up_won = close_px >= open_ref  # ties -> Up
+            up_won = close_px >= open_ref  # price-series proxy (ties -> Up)
+            ro = self.recorded_outcomes.get(int(round(wstart)))
+            if ro is not None:
+                up_won = (ro == "UP")      # real Polymarket outcome when recorded
             report.windows += 1
 
             market = MarketInfo(

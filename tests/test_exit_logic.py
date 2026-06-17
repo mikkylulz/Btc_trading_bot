@@ -39,6 +39,13 @@ def settle(app, market, now):
     return asyncio.run(app._settle(market, now))
 
 
+def set_oracle(app, outcome):
+    """Stub Polymarket's resolution (settlement now grades off the oracle)."""
+    async def _o(slug):
+        return outcome
+    app.discovery.fetch_resolution = _o
+
+
 def make_market(market_id="m1", close_ts=T0 + 600.0):
     return MarketInfo(
         market_id=market_id, slug=f"btc-updown-15m-{int(close_ts - 900)}",
@@ -184,19 +191,19 @@ def test_addon_fill_updates_trade_row_and_risk(app):
 
 # ── settlement ────────────────────────────────────────────────────────────────
 
-def test_settle_waits_until_feed_past_close(app):
+def test_settle_waits_for_oracle(app):
+    # settlement grades off the oracle in BOTH modes now; before it resolves,
+    # don't grade off the local feed — wait.
     market = make_market(close_ts=T0 + 60)
     buy_into_position(app, market, size=10.0, price=0.50)
-    # feed last ticked BEFORE the close: a reconnect gap could hide the truth
-    app.chainlink._update(100_050.0, T0 + 30)
-    settle(app, market, T0 + 70)
-    assert market.market_id in app.markets  # not graded yet
+    settle(app, market, T0 + 70)               # oracle stub -> None
+    assert market.market_id in app.markets     # not graded yet — waiting
 
-    app.chainlink._update(100_050.0, T0 + 61)  # tick past the close boundary
-    settle(app, market, T0 + 75)
+    set_oracle(app, "UP")                       # Polymarket resolves UP
+    settle(app, market, T0 + 95)                # past the 20s oracle-poll throttle
     assert market.market_id not in app.markets
     row = open_trade_row(app, market.market_id)
-    assert row["resolution_outcome"] == "UP"   # 100050 >= 100000
+    assert row["resolution_outcome"] == "UP"
     assert row["net_pnl"] == pytest.approx(10.0 * (1 - 0.50))
 
 
@@ -206,8 +213,7 @@ def test_settle_with_partial_exit_uses_true_position_net(app):
     app._on_fill(Fill(order_id="o-x", market_id=market.market_id,
                       token_id="TU", outcome=Outcome.UP, side=Side.SELL,
                       price=0.60, size=4.0, fee=0.0, ts=T0 + 10))  # +0.40 realized
-    app.chainlink._update(100_050.0, T0 + 59)  # last value before the close
-    app.chainlink._update(100_050.0, T0 + 61)  # proves connectivity past it
+    set_oracle(app, "UP")
     settle(app, market, T0 + 70)
     row = open_trade_row(app, market.market_id)
     # 6 remaining contracts win (6 * 0.50) plus 0.40 already realized
@@ -254,8 +260,7 @@ def test_stale_feed_reject_logged_once_per_state(app):
 def test_pnl_summary_excludes_tagged_rows(app):
     market = make_market()
     buy_into_position(app, market, size=10.0, price=0.50)
-    app.chainlink._update(100_050.0, market.close_ts - 1)
-    app.chainlink._update(100_050.0, market.close_ts + 1)
+    set_oracle(app, "UP")
     settle(app, market, market.close_ts + 5)
     assert app.store.pnl_summary()["net_pnl"] == pytest.approx(5.0)
 

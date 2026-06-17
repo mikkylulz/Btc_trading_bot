@@ -27,16 +27,19 @@ log = logging.getLogger(__name__)
 _PRICE_HEADER = ["ts", "price"]
 _BOOK_HEADER = ["ts", "slug", "side", "token_id",
                 "best_bid", "best_ask", "bid_size", "ask_size"]
+_OUTCOME_HEADER = ["slug", "outcome"]
 
 
 class DataRecorder:
-    def __init__(self, price_path: str, book_path: str):
+    def __init__(self, price_path: str, book_path: str, outcome_path: str):
         self._price_path = price_path
         self._book_path = book_path
+        self._outcome_path = outcome_path
         self._lock = threading.Lock()
         self._last_price_ts: Optional[float] = None
         self._ensure(price_path, _PRICE_HEADER)
         self._ensure(book_path, _BOOK_HEADER)
+        self._ensure(outcome_path, _OUTCOME_HEADER)
 
     def _ensure(self, path: str, header: list) -> None:
         d = os.path.dirname(path)
@@ -71,6 +74,16 @@ class DataRecorder:
                     csv.writer(f).writerow([f"{ts:.3f}", f"{price:.4f}"])
             except OSError as e:
                 log.warning("price record failed: %s", e)
+
+    def record_outcome(self, slug: str, outcome: str) -> None:
+        """The window's real (oracle) resolution — lets the backtester grade off
+        Polymarket's result instead of the price-series close-vs-open proxy."""
+        with self._lock:
+            try:
+                with open(self._outcome_path, "a", newline="") as f:
+                    csv.writer(f).writerow([slug, outcome])
+            except OSError as e:
+                log.warning("outcome record failed: %s", e)
 
     def record_book(self, ts: float, slug: str, side: str, token_id: str,
                     top: Optional[BookTop]) -> None:
