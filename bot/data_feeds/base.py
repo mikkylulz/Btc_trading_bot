@@ -17,14 +17,22 @@ from ..utils import utc_ts
 class RollingPriceBuffer:
     """Thread-safe rolling (timestamp, price) buffer with vol/lookback helpers."""
 
-    def __init__(self, max_age_s: float = 7200.0):
+    def __init__(self, max_age_s: float = 7200.0, maxlen: int = 300_000):
         self.max_age_s = max_age_s
-        self._buf: Deque[Tuple[float, float]] = deque()
+        # Hard size cap: age-pruning uses the latest ts, so one corrupt (e.g.
+        # millisecond) timestamp could pin "now" forward and stop pruning,
+        # growing the deque without bound -> MemoryError over days (2026-06-17).
+        # maxlen guarantees memory stays bounded regardless of timestamp glitches.
+        self._buf: Deque[Tuple[float, float]] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
 
     def append(self, ts: float, price: float) -> None:
         if price <= 0 or not math.isfinite(price):
             return
+        if not math.isfinite(ts):
+            return
+        if ts > 1e12:           # millisecond timestamp -> seconds (the freeze cause)
+            ts = ts / 1000.0
         with self._lock:
             if self._buf and ts < self._buf[-1][0]:
                 ts = self._buf[-1][0]  # never go backwards in time

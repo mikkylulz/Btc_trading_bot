@@ -32,7 +32,25 @@ def test_buffer_rejects_garbage():
     buf.append(T0, -5.0)
     buf.append(T0, 0.0)
     buf.append(T0, float("nan"))
+    buf.append(float("inf"), 100.0)   # bad ts -> rejected
     assert len(buf) == 0
+
+
+def test_buffer_millisecond_ts_does_not_freeze_pruning(buffer_age=7200.0):
+    # a corrupt millisecond timestamp must not pin "now" forward and stop pruning
+    buf = RollingPriceBuffer(max_age_s=buffer_age)
+    buf.append(T0 * 1000.0, 100.0)          # ms timestamp -> normalised to seconds
+    buf.append(T0 + 1, 101.0)               # normal seconds tick, 1s later
+    # old entries beyond max_age must still prune as normal seconds advance
+    buf.append(T0 + buffer_age + 10, 102.0)
+    assert len(buf) == 1                     # the two older entries pruned by age
+
+
+def test_buffer_hard_size_cap():
+    buf = RollingPriceBuffer(max_age_s=1e18, maxlen=100)   # age-prune effectively off
+    for i in range(5000):
+        buf.append(T0 + i, 100.0 + (i % 7))
+    assert len(buf) <= 100                   # deque maxlen bounds memory regardless
 
 
 def test_chainlink_unconfigured_is_stale():
