@@ -160,19 +160,31 @@ class MarketDiscovery:
         """Settlement fallback: Polymarket's real resolved outcome for one market
         ('UP'/'DOWN'), or None if not yet resolved / unreachable. Grades off the
         same oracle the market settles on, so it's authoritative when our local
-        feed missed the close (reconnect gap)."""
+        feed missed the close (reconnect gap).
+
+        Gamma's `/markets?slug=` defaults to OPEN markets only — once a window
+        flips `closed=true` (which it does within seconds of resolving) that
+        query returns an empty list, so the oracle was never actually consulted
+        at settlement and grading silently fell back to the local feed
+        (mis-graded 23% of near-tie 5m windows, found 2026-06-18). Query BOTH
+        states: the still-open-but-converged window first, then the closed/
+        archived one — take the first decisive resolution."""
         async with httpx.AsyncClient(base_url=self.s.gamma_host, timeout=10.0) as client:
-            try:
-                resp = await client.get("/markets", params={"slug": slug})
-                resp.raise_for_status()
-                batch = resp.json()
-            except Exception as e:  # noqa: BLE001
-                log.warning("oracle resolution fetch failed for %s: %r", slug, e)
-                return None
-        for m in batch if isinstance(batch, list) else []:
-            if m.get("slug") != slug:   # exact match only
-                continue
-            return parse_resolution(m)
+            for params in ({"slug": slug}, {"slug": slug, "closed": "true"}):
+                try:
+                    resp = await client.get("/markets", params=params)
+                    resp.raise_for_status()
+                    batch = resp.json()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("oracle resolution fetch failed for %s (%s): %r",
+                                slug, params, e)
+                    continue
+                for m in batch if isinstance(batch, list) else []:
+                    if m.get("slug") != slug:   # exact match only
+                        continue
+                    outcome = parse_resolution(m)
+                    if outcome is not None:
+                        return outcome
         return None
 
     def candidate_slugs(self, now_ts: float) -> List[str]:

@@ -25,3 +25,6 @@ validation/
 .claude/
 .idea/
 .vscode/
+
+# DB migration backups
+*.sqlite.bak*
