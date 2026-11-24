@@ -1,7 +1,7 @@
 """Polymarket order-book imbalance as a bounded drift nudge.
 
 Top-of-book imbalance on the contract itself can carry short-horizon information
-about where the contract price is going (Claude.md §3). Disabled by default.
+about where the contract price is going. Disabled by default.
 """
 
 from __future__ import annotations

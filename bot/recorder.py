@@ -1,4 +1,4 @@
-"""Optional data recorder for offline backtesting (Claude.md §9).
+"""Optional data recorder for offline backtesting.
 
 Persists the resolution-feed price series and order-book tops to CSV so the
 backtester can replay REAL recorded books — the only mode that measures actual

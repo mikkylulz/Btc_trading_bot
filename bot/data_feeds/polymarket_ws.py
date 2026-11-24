@@ -2,7 +2,7 @@
 
 Feeds microstructure and execution. Trade prints are also what the paper engine
 uses to decide whether a resting maker order would have filled (book trades
-through the price), per Claude.md §6.
+through the price)
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Maker-first order planning (Claude.md §6).
+"""Maker-first order planning.
 
 Trade trigger: enter only when
     fair_value - executable_maker_price > edge_margin

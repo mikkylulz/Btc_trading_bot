@@ -1,5 +1,5 @@
-"""Perp funding-rate micro-nudge. Stub: returns 0 until a backtest earns it a weight
-(Claude.md §3). Wire to GATEIO_API_BASE funding endpoint when enabling."""
+"""Perp funding-rate micro-nudge. Stub: returns 0 until a backtest earns it a weight.
+Wire to GATEIO_API_BASE funding endpoint when enabling."""
 
 from __future__ import annotations
 

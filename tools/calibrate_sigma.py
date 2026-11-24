@@ -3,8 +3,7 @@
 Why this works: the backtester scores modelled P(Up)=Phi(z) against the actual
 resolved outcome of each window. The synthetic order book only affects PnL/edge,
 NOT calibration — so feeding real prices and sweeping sigma_scale tells us which
-scale makes Phi(z) match reality. Lowest calibration_error wins (Claude.md §11
-step 1: get sigma calibrated FIRST).
+scale makes Phi(z) match reality. Lowest calibration_error wins.
 
 Usage:
     python -m tools.calibrate_sigma --window 15m --hours 12

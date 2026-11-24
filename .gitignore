@@ -28,3 +28,16 @@ validation/
 
 # DB migration backups
 *.sqlite.bak*
+
+# ── More local data / caches ──────────────────────────────────────────────
+*.db
+*.db-journal
+*.csv
+*.jsonl
+logs/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.DS_Store
+Thumbs.db

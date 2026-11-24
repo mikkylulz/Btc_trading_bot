@@ -1,4 +1,4 @@
-"""The fair-value engine (Claude.md §2).
+"""The fair-value engine.
 
     P(close >= open) = Phi(z)
     z = (drift_adj + realised_move) / (sigma * sqrt(remaining_time))
@@ -96,7 +96,7 @@ class FairValueEngine:
         denom = sigma * math.sqrt(remaining_frac)
 
         # Signal layer: bounded drift adjustments, then a hard probability-space clamp
-        # so the sum can never move Phi(z) by more than drift_cap (Claude.md §3).
+        # so the sum can never move Phi(z) by more than drift_cap.
         drift = 0.0
         if self.s.enable_momentum and self.momentum is not None:
             drift += self.momentum.drift(now_ts, sigma)

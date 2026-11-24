@@ -1,4 +1,4 @@
-"""Structured logging + SQLite persistence (Claude.md §8).
+"""Structured logging + SQLite persistence.
 
 Three tables:
 - decisions:   every trade decision, INCLUDING rejections with reason.
@@ -281,7 +281,7 @@ class BotStore:
         """Net PnL over resolved trades. Tagged rows (e.g. mis-graded pre-fix
         exits) are excluded — inflated stats must not leak into the summary.
 
-        Win rate is reported but is NOT the objective (Claude.md §1.3): a binary's
+        Win rate is reported but is NOT the objective: a binary's
         breakeven WR equals entry price plus fees, so a high WR at high entry
         prices can still be negative EV. Net-of-fee EV is the KPI."""
         with self._lock:

@@ -88,7 +88,7 @@ def test_chainlink_decode_v3_full_report():
 
 def test_chainlink_down_does_not_fall_back_to_spot(settings):
     """THE critical safety test: with spot fresh and Chainlink dead, the 15m
-    path must refuse to price — never silently use spot (Claude.md §4)."""
+    path must refuse to price — never silently use spot."""
     chainlink = ChainlinkFeed()                     # dead resolution feed
     spot = PriceFeed()
     spot._update(100_000.0, ts=T0 + 450)            # spot is alive and fresh

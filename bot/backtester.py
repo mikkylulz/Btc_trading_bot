@@ -1,4 +1,4 @@
-"""Backtester (Claude.md §9) — the gatekeeper for live money. It must not flatter.
+"""Backtester — the gatekeeper for live money. It must not flatter.
 
 - Replays resolution-feed prices (CSV: ts,price — Chainlink history for 15m,
   Binance for 1h) and, where available, book data. Without recorded books it

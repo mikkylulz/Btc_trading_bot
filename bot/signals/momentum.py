@@ -1,7 +1,7 @@
 """Short-horizon spot trend as a BOUNDED drift nudge (price units).
 
 Not a vote — a tilt. The strategy layer additionally clamps the *total* drift so it
-can never move Phi(z) by more than drift_cap (Claude.md §3). Disabled by default.
+can never move Phi(z) by more than drift_cap. Disabled by default.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 """Backtester: maker-only fills, and the honesty rule — a known gross-positive /
-net-negative scenario is reported as FAIL, not buried (Claude.md §9/§14)."""
+net-negative scenario is reported as FAIL, not buried."""
 
 from bot.backtester import (Backtester, BacktestReport, BacktestTrade,
                             generate_gbm_prices, load_recorded_books,

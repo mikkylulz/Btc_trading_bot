@@ -6,7 +6,7 @@ benchmark price. Credentials come from the sponsored Polymarket-trader
 programme (https://pm-ds-request.streams.chain.link/) or a normal Data Streams
 subscription; the BTC/USD feed ID is shown on data.chain.link/streams/btc-usd.
 
-HARD RULE (Claude.md §4): if this stream is unavailable or stale, the 5m/15m
+HARD RULE: if this stream is unavailable or stale, the 5m/15m
 path must HALT ENTRIES. There is no fallback to spot anywhere in this class or
 its callers; a silent fallback to spot is the single most dangerous bug this
 bot can have.

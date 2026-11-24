@@ -1,4 +1,4 @@
-"""Unit tests for the fair-value engine: Phi(z) math + edge cases (Claude.md §14)."""
+"""Unit tests for the fair-value engine: Phi(z) math + edge cases."""
 
 import math
 

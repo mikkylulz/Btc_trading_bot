@@ -5,7 +5,7 @@ through `wss://ws-live-data.polymarket.com`, topic `crypto_prices_chainlink`,
 no authentication required (docs.polymarket.com/market-data/websocket/rtds).
 This is resolution truth by construction — it is the value the resolver sees.
 
-Same hard rule as the direct feed (Claude.md §4): if this socket is down or
+Same hard rule as the direct feed: if this socket is down or
 stale, 15m entries HALT. No fallback to spot, including the `crypto_prices`
 (Binance) topic on this very socket.
 

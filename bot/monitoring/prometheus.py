@@ -1,4 +1,4 @@
-"""Prometheus endpoint stubs for Grafana (Claude.md §15). Wire-up-later, not
+"""Prometheus endpoint stubs for Grafana. Wire-up-later, not
 load-bearing for trading: every method no-ops if prometheus_client is missing."""
 
 from __future__ import annotations

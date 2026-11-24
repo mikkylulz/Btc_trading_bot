@@ -1,6 +1,6 @@
 """Feed base: every feed exposes last_value, as_of_timestamp, is_stale(max_age).
 
-The strategy refuses to price a market whose resolution feed is stale (Claude.md §4).
+The strategy refuses to price a market whose resolution feed is stale.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 """Execution clients. Paper and live share one interface so the strategy never
-knows which it's talking to (Claude.md §6).
+knows which it's talking to.
 
 LiveClient wraps the official `py-clob-client` (imported lazily so paper mode and
 tests never need it installed). It enforces maker-only: an order priced at or
@@ -94,7 +94,7 @@ class LiveClient(ExecutionClient):
     the same library the sister bots use for real fills. Install for live mode:
         pip install py-clob-client-v2
 
-    Maker-first is preserved (Claude.md §1.2/§6): orders are GTC limit orders,
+    Maker-first is preserved: orders are GTC limit orders,
     and unless allow_taker=true they are submitted post_only=True, so the
     EXCHANGE rejects any order that would cross the spread — a second guard
     behind _assert_not_crossing."""

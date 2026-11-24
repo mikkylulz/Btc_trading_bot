@@ -1,4 +1,4 @@
-"""Realised-vol estimator feeding sigma. LOAD-BEARING (Claude.md §3):
+"""Realised-vol estimator feeding sigma. LOAD-BEARING:
 a wrong sigma miscalibrates every probability. Calibrated per window length via
 the per-window `sigma_scale` multipliers (tune until the calibration plot is flat).
 

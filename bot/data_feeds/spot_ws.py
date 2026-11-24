@@ -1,7 +1,7 @@
 """Low-latency spot websocket feed (Binance trade stream by default).
 
 Used for sigma estimation and the momentum drift — NEVER as a resolution feed for
-15m markets (Claude.md §1.1/§4). Auto-reconnect with exponential backoff plus a
+15m markets. Auto-reconnect with exponential backoff plus a
 staleness watchdog that forces a reconnect if messages stop arriving.
 """
 

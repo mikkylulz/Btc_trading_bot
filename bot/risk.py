@@ -1,5 +1,5 @@
 """Risk: fractional Kelly on net-of-fee edge, hard caps, halt-streak isolation,
-paper/live gating (Claude.md §7).
+paper/live gating.
 
 - Hard dollar cap dominates Kelly.
 - Halt-streak isolation is per market class (window label): on a loss streak the
@@ -59,7 +59,7 @@ class RiskManager:
         if not record or not record.get("net_ev_per_trade", 0) > 0 \
                 or not record.get("calibration_ok") or not record.get("sample_size", 0):
             log.error("MODE=live but no valid paper-validation record at %s — "
-                      "staying paper (Claude.md §11)", s.validation_record_path)
+                      "staying paper", s.validation_record_path)
             return False
         return True
 
@@ -171,7 +171,7 @@ class RiskManager:
             log.warning("halt-streak: %s entries halted until %.0f", window,
                         h.halted_until)
 
-    # ── probability-space stop (Claude.md §7) ─────────────────────────────────
+    # ── probability-space stop ─────────────────────────────────
     def should_exit(self, our_side_p: float) -> bool:
         """Exit if the modelled probability of our side has collapsed.
 

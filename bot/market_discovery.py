@@ -1,4 +1,4 @@
-"""Gamma API market discovery (Claude.md §5).
+"""Gamma API market discovery.
 
 - Exact slug-prefix validation only — NO fuzzy matching (fuzzy matching pulled
   stale markets in panama).
@@ -22,7 +22,7 @@ from .utils import parse_iso_utc, utc_ts
 
 log = logging.getLogger(__name__)
 
-# Default resolution feed per window per Claude.md §1.1. The market description is
+# Default resolution feed per window The market description is
 # still checked and, if it names a feed explicitly, the description wins.
 DEFAULT_FEED_BY_WINDOW = {
     "5m": ResolutionFeed.CHAINLINK,

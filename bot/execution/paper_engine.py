@@ -1,4 +1,4 @@
-"""Paper engine with realistic maker semantics (Claude.md §6).
+"""Paper engine with realistic maker semantics.
 
 A resting order fills ONLY when the book trades through its price, after a
 queue-position penalty is consumed. Instant fills at mid are forbidden — they

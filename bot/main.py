@@ -1,4 +1,4 @@
-"""Entry point: async scheduler loop, per-window cadence (Claude.md §12).
+"""Entry point: async scheduler loop, per-window cadence.
 
     python -m bot.main            # paper trading loop (default)
     python -m bot.main discover   # list active BTC markets + detected resolution feed
@@ -193,7 +193,7 @@ class TradingApp:
         adverse selection isn't modelled), so after the first N resolved LIVE
         trades, if cumulative net PnL <= floor OR win rate < min_wr, halt new live
         entries and alert. Derived from the DB each call -> persists across
-        restarts. One-way trip: resume only after review (Claude.md / config)."""
+        restarts. One-way trip: resume only after review."""
         if self.s.is_paper or not self.s.live_guard_enabled or self._live_halted:
             return
         st = self.store.live_guard_stats(self.s.live_guard_min_trades)

@@ -1,7 +1,7 @@
 """Config + env loading.
 
 Secrets come from .env (see .env.example). Strategy/risk knobs have safe defaults here
-and can be overridden via env (JSON for dict fields) — see Claude.md §10 for tuning order.
+and can be overridden via env (JSON for dict fields). See the README for tuning order.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # 1) LIVE_MODE=true  2) live_confirm=YES  3) a valid paper_validation.json.
     # LIVE_MODE=true ALONE does nothing — it only arms lock #1. Default paper.
     live_mode: bool = Field(default=False)   # env: LIVE_MODE
-    allow_taker: bool = False           # crypto stays false; maker-first (Claude.md §1.2)
+    allow_taker: bool = False           # crypto stays false; maker-first
     live_confirm: str = ""              # must be "YES" (plus validation record) to go live
 
     # ─── Polymarket auth / hosts ─────────────────────────────────────────────
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     discovery_interval_s: float = 30.0
     discovery_windows_ahead: int = 3    # current window + N upcoming per series
 
-    # ─── Strategy (Claude.md §2, §3, §6) ─────────────────────────────────────
+    # ─── Strategy ─────────────────────────────────────
     # Polymarket crypto taker fee: fee = contracts * fee_rate * p * (1-p).
     # 0.072 makes the peak (p=0.5) ~1.8% per contract, the "~1.80% scale" in the spec.
     fee_rate: float = 0.072
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     trend_lookback_s: float = 1800.0     # measure BTC drift over the last 30 min
     trend_min_drift: float = 0.0010      # |return| >= 0.10% over the lookback = a trend
 
-    # ─── Risk (Claude.md §7) ─────────────────────────────────────────────────
+    # ─── Risk ─────────────────────────────────────────────────
     bankroll_usd: float = 100.0
     kelly_fraction: float = 0.25
     max_trade_usd: float = 2.6          # hard cap dominates Kelly. Must be >= 5*max_entry
