@@ -86,7 +86,13 @@ So the bot keeps two kinds of feed apart:
 - **Fast spot feed** (Binance/Coinbase websockets). Used only for volatility estimation
   and drift signals, never to decide who won.
 
-**The bug I found.** Even with pricing routed correctly, settlement was graded off the
+**Where the bug started.** The Binance-for-Chainlink grading bug first appeared in my
+earlier system, [polymarket-trading-system](https://github.com/mikkylulz/polymarket-trading-system).
+Its BTC 5m and 15m scanners priced and graded every trade on Binance candles, while the
+markets settled on Chainlink. Its live BTC 15m run went 0/17. This bot was rebuilt around
+fixing that.
+
+**The bug I found here.** Even with pricing routed correctly, settlement was graded off the
 bot's own local copy of the Chainlink stream. On near-tie windows that local value
 disagreed with what Polymarket actually paid out, so losses were recorded and alerted as
 wins. I caught it by comparing the bot's Telegram alerts with Polymarket's results by hand.
